@@ -1,0 +1,1 @@
+# makes 'menami' a package
