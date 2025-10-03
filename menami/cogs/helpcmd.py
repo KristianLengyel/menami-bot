@@ -60,7 +60,7 @@ def build_help_embed() -> discord.Embed:
         value=(
             "`mv` — View card (UID or latest)\n"
             "`ci` — Detailed card info\n"
-            "`mg` — Give card to user"
+            "Use **/give** to transfer a card"
         ),
         inline=False,
     )
@@ -78,7 +78,7 @@ def build_help_embed() -> discord.Embed:
     e.add_field(
         name="⚡ Quick Ref",
         value=(
-            "`md mc mi mv ci mlu mg mb tags tc td t ut`"
+            "`md mc mi mv ci mlu mb tags tc td t ut`"
         ),
         inline=False,
     )

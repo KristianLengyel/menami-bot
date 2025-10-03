@@ -1,11 +1,8 @@
 import os
-import asyncio
 from dotenv import load_dotenv
-import discord
-from discord.ext import commands
-
 from menami.config import INTENTS, DROP_COOLDOWN_S
 from menami.db import DB
+from discord.ext import commands
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")

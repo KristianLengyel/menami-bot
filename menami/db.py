@@ -10,6 +10,7 @@ class DB:
     async def init(self):
         async with aiosqlite.connect(self.path) as db:
             await db.executescript("""
+            PRAGMA foreign_keys=ON;
             PRAGMA journal_mode=WAL;
 
             CREATE TABLE IF NOT EXISTS users(
@@ -39,7 +40,7 @@ class DB:
               owned_by TEXT,
               grab_delay REAL
             );
-                                   
+
             CREATE TABLE IF NOT EXISTS burns(
               card_uid   TEXT PRIMARY KEY,
               series     TEXT NOT NULL,
@@ -51,7 +52,7 @@ class DB:
               owner_id   TEXT NOT NULL,
               burned_at  TEXT NOT NULL
             );
-                                   
+
             CREATE TABLE IF NOT EXISTS tags(
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id TEXT NOT NULL,
@@ -60,20 +61,20 @@ class DB:
                 UNIQUE(user_id, name)
             );
 
+            -- One-tag-per-card model (as in your original schema)
             CREATE TABLE IF NOT EXISTS card_tags(
                 card_uid TEXT NOT NULL,
                 tag_id INTEGER NOT NULL,
                 PRIMARY KEY(card_uid),
                 FOREIGN KEY(card_uid) REFERENCES cards(card_uid),
                 FOREIGN KEY(tag_id) REFERENCES tags(id)
-            );                           
+            );
 
             CREATE TABLE IF NOT EXISTS meta(
               key TEXT PRIMARY KEY,
               value TEXT NOT NULL
             );
 
-            -- New: content tables for large catalogs
             CREATE TABLE IF NOT EXISTS series(
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               name TEXT UNIQUE NOT NULL
@@ -95,8 +96,7 @@ class DB:
             cols = {row[1] for row in await (await db.execute("PRAGMA table_info(users)")).fetchall()}
             for col in ["gems", "tickets", "dust_damaged", "dust_poor", "dust_good", "dust_excellent", "dust_mint"]:
                 if col not in cols:
-                    default = 0
-                    await db.execute(f"ALTER TABLE users ADD COLUMN {col} INTEGER NOT NULL DEFAULT {default}")
+                    await db.execute(f"ALTER TABLE users ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
             await db.commit()
 
     # ---------- Content management ----------
@@ -383,17 +383,14 @@ class DB:
 
     async def claim_card(self, card_uid: str, claimer_id: int, delay: float) -> bool:
         async with aiosqlite.connect(self.path) as db:
-            cur = await db.execute("SELECT grabbed_by FROM cards WHERE card_uid=?", (card_uid,))
-            row = await cur.fetchone()
-            if not row:
-                return False
-            if row[0] is not None:
-                return False
-            await db.execute("""
-              UPDATE cards SET grabbed_by=?, owned_by=?, grab_delay=? WHERE card_uid=?
+            cur = await db.execute("""
+                UPDATE cards
+                   SET grabbed_by=?, owned_by=?, grab_delay=?
+                 WHERE card_uid=?
+                   AND grabbed_by IS NULL
             """, (str(claimer_id), str(claimer_id), delay, card_uid))
             await db.commit()
-            return True
+            return cur.rowcount == 1
 
     async def get_card(self, card_uid: str) -> dict | None:
         async with aiosqlite.connect(self.path) as db:
@@ -472,7 +469,7 @@ class DB:
 
             await db.commit()
             return reward
-    
+
     async def character_stats(self, series: str, character: str, set_id: int | None = None) -> dict:
         params = [series, character]
         set_clause = ""
@@ -555,7 +552,7 @@ class DB:
                 0: circ_by_stars.get(0, 0),
             },
         }
-        
+
     async def get_latest_card(self, user_id: int) -> dict | None:
         async with aiosqlite.connect(self.path) as db:
             cur = await db.execute("""

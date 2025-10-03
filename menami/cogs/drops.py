@@ -6,7 +6,8 @@ from discord import app_commands
 from discord.ext import commands
 
 from ..config import DROP_COOLDOWN_S, CLAIM_WINDOW_S, EMOJIS
-from ..utils import make_single_card_payload, build_triple_drop_embed, format_card_embed
+from ..helpers import make_single_card_payload
+from ..embeds import build_triple_drop_embed, format_card_embed
 
 class DropsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -34,6 +35,7 @@ class DropsCog(commands.Cog):
         drop = self.bot.active_drops.get(message_id)
         if not drop or drop.get("claimed"):
             return
+        drop["claimed"] = True
         try:
             channel = self.bot.get_channel(drop["channel_id"]) or await self.bot.fetch_channel(drop["channel_id"])
             msg = await channel.fetch_message(message_id)
@@ -73,7 +75,6 @@ class DropsCog(commands.Cog):
         self.bot.channel_cooldowns[ch_id] = now
 
         asyncio.create_task(self.add_number_reactions(msg))
-
         asyncio.create_task(self.expire_message_if_unclaimed(msg.id))
 
     @commands.command(name="d", aliases=["md"])
@@ -101,7 +102,6 @@ class DropsCog(commands.Cog):
         self.bot.channel_cooldowns[ch_id] = now
 
         asyncio.create_task(self.add_number_reactions(sent))
-
         asyncio.create_task(self.expire_message_if_unclaimed(sent.id))
 
     @commands.Cog.listener()
@@ -134,6 +134,8 @@ class DropsCog(commands.Cog):
             return
 
         idx = EMOJIS.index(emoji)
+        if idx >= len(drop["cards"]):
+            return
         card_uid = drop["cards"][idx]
 
         raw_delay = now - drop["dropped_at"]
