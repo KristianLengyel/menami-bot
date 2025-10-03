@@ -1,7 +1,7 @@
 from __future__ import annotations
 import json
 import aiosqlite
-from .config import DB_PATH, QUALITY_BY_STARS
+from .config import DB_PATH, QUALITY_BY_STARS, BURN_REWARD_BY_STARS
 
 class DB:
     def __init__(self, path: str = DB_PATH):
@@ -444,8 +444,7 @@ class DB:
             owned_by, stars, set_id, series, character, grabbed_by, grab_delay = row
             stars = int(stars)
 
-            rewards = {0: 1, 1: 5, 2: 12, 3: 35, 4: 75}
-            reward = rewards.get(stars, 0)
+            reward = BURN_REWARD_BY_STARS.get(stars, 0)
 
             from datetime import datetime, timezone
             burned_at = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()

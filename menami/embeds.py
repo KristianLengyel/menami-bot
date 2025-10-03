@@ -1,6 +1,6 @@
 import discord
 from .helpers import stars_to_str, iso_utc_to_text
-from .config import EMOJIS, CLAIM_WINDOW_S
+from .config import EMOJIS, CLAIM_WINDOW_S, BURN_REWARD_BY_STARS
 
 def format_card_embed(card: dict, claimed: bool) -> discord.Embed:
     ts_text = iso_utc_to_text(card["dropped_at"])
@@ -86,10 +86,8 @@ def build_character_lookup_embed(stats: dict, edition_index: int) -> discord.Emb
     e.set_footer(text=f"Showing edition {edition_index} of {total_editions}")
     return e
 
-REWARD_BY_STARS = {0: 1, 1: 5, 2: 12, 3: 35, 4: 75}
-
 def build_burn_preview_embed(requester: discord.abc.User, stars: int) -> discord.Embed:
-    coins = REWARD_BY_STARS.get(stars, 0)
+    coins = BURN_REWARD_BY_STARS.get(stars, 0)
     dust = f"✨ 1 Dust ({stars_to_str(stars)})"
     gold = f"💰 {coins} Gold"
     desc = f"{requester.mention}, you will receive:\n\n{gold}\n{dust}"

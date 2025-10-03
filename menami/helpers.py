@@ -2,7 +2,7 @@ import os
 import random
 import string
 from datetime import datetime, timezone
-from .config import STAR_MIN, STAR_MAX, QUALITY_BY_STARS, CLAIM_WINDOW_S, EMOJIS
+from .config import STAR_MIN, STAR_MAX, QUALITY_BY_STARS, STAR_WEIGHTS
 
 def gen_card_uid() -> str:
     return "".join(random.choices(string.ascii_lowercase + string.digits, k=7))
@@ -31,7 +31,15 @@ async def make_single_card_payload(db, invoker_id: int, guild_id: int) -> dict:
         series, character = ("Unknown Series", "Unknown Character")
     else:
         series, character = sc
-    stars = random.randint(STAR_MIN, STAR_MAX)
+
+    domain = list(range(STAR_MIN, STAR_MAX + 1))
+    try:
+        if len(STAR_WEIGHTS) != len(domain) or any(float(w) <= 0 for w in STAR_WEIGHTS):
+            raise ValueError("Invalid STAR_WEIGHTS length or values")
+        stars = random.choices(domain, weights=STAR_WEIGHTS, k=1)[0]
+    except Exception:
+        stars = random.randint(STAR_MIN, STAR_MAX)
+
     condition = QUALITY_BY_STARS.get(int(stars), "damaged")
     dropped_at = datetime.now(timezone.utc).isoformat()
     return {
