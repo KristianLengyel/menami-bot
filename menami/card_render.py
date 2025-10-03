@@ -85,9 +85,62 @@ async def render_card_image(series: str, character: str, serial_number: int, set
 
     draw.text((10, 10), f"{character}", font=font, fill="black")
     draw.text((10, 35), f"{series}", font=font, fill="black")
-    draw.text((10, 60), f"#{serial_number} • ◈{set_id}", font=font, fill="black")
-    draw.text((10, 85), f"UID: {card_uid}", font=font, fill="black")
+    draw.text((10, 60), f"#{serial_number} • {set_id}", font=font, fill="black")
+    draw.text((10, 85), f"{card_uid}", font=font, fill="black")
 
     buf = io.BytesIO()
     base.save(buf, format=fmt)
     return buf.getvalue()
+
+# --- for /drop (836x419 WEBP) ---
+
+async def render_drop_triptych(db, cards: list[dict]) -> bytes:
+    import io
+    from PIL import Image
+
+    target_w, target_h = 836, 419
+    padding = 20 
+
+    available_w = target_w - (2 * padding)
+    available_h = target_h - (2 * padding)
+
+    orig_w, orig_h = 274, 405
+
+    scale = min(available_h / orig_h, (available_w / 3) / orig_w)
+    card_w, card_h = int(orig_w * scale), int(orig_h * scale)
+
+    total_card_w = card_w * 3
+    remaining_w = target_w - total_card_w
+    gap = remaining_w // 4
+
+    canvas = Image.new("RGBA", (target_w, target_h), (0, 0, 0, 0))
+    rendered_images: list[Image.Image] = []
+
+    for c in cards:
+        url = await db.get_character_image(c["series"], c["character"], int(c["set_id"]))
+        if not url:
+            url = await db.get_character_image_any(c["series"], c["character"])
+
+        img_bytes = await render_card_image(
+            series=c["series"],
+            character=c["character"],
+            serial_number=int(c["serial_number"]),
+            set_id=int(c["set_id"]),
+            card_uid=c["card_uid"],
+            image_url=url,
+            fmt="PNG",
+        )
+        im = Image.open(io.BytesIO(img_bytes)).convert("RGBA")
+        im = im.resize((card_w, card_h), Image.LANCZOS)
+        rendered_images.append(im)
+
+    y = (target_h - card_h) // 2
+    x = gap
+    for im in rendered_images:
+        canvas.alpha_composite(im, (x, y))
+        x += card_w + gap
+
+    out = io.BytesIO()
+    canvas.save(out, format="WEBP")
+    return out.getvalue()
+

@@ -2,8 +2,10 @@ from __future__ import annotations
 import time
 import asyncio
 import discord
+import io
 from discord import app_commands
 from discord.ext import commands
+from ..card_render import render_drop_triptych
 
 from ..config import DROP_COOLDOWN_S, CLAIM_WINDOW_S, EMOJIS
 from ..helpers import make_single_card_payload
@@ -67,12 +69,17 @@ class DropsCog(commands.Cog):
         last = self.bot.channel_cooldowns.get(ch_id, 0)
         if now - last < cd:
             remain = int(cd - (now - last))
-            return await interaction.response.send_message(f"Please wait {remain}s before dropping again in this channel.", ephemeral=True)
+            return await interaction.response.send_message(
+                f"Please wait {remain}s before dropping again in this channel.",
+                ephemeral=True
+            )
 
         await self.bot.db.ensure_user(interaction.user.id)
         cards = await self.create_three_cards(interaction.user.id, interaction.guild_id)
-        embed = build_triple_drop_embed(cards)
-        await interaction.response.send_message(embed=embed)
+
+        img_bytes = await render_drop_triptych(self.bot.db, cards)
+        file = discord.File(io.BytesIO(img_bytes), filename="drop.webp")
+        await interaction.response.send_message(file=file)
         msg = await interaction.original_response()
 
         start_ts = time.time()
@@ -87,6 +94,7 @@ class DropsCog(commands.Cog):
 
         asyncio.create_task(self.add_number_reactions(msg))
         asyncio.create_task(self.expire_message_if_unclaimed(msg.id))
+
 
     @commands.command(name="d", aliases=["md"])
     async def cmd_drop(self, ctx: commands.Context):
@@ -104,8 +112,10 @@ class DropsCog(commands.Cog):
 
         await self.bot.db.ensure_user(ctx.author.id)
         cards = await self.create_three_cards(ctx.author.id, ctx.guild.id)
-        embed = build_triple_drop_embed(cards)
-        sent = await ctx.send(embed=embed)
+
+        img_bytes = await render_drop_triptych(self.bot.db, cards)
+        file = discord.File(io.BytesIO(img_bytes), filename="drop.webp")
+        sent = await ctx.send(file=file)
 
         start_ts = time.time()
         self.bot.active_drops[sent.id] = {

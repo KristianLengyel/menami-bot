@@ -111,6 +111,7 @@ class DB:
             CREATE INDEX IF NOT EXISTS idx_cards_series_character_set ON cards(series, character, set_id);
             CREATE INDEX IF NOT EXISTS idx_burns_series_character ON burns(series, character);
             CREATE INDEX IF NOT EXISTS idx_burns_series_character_set ON burns(series, character, set_id);
+            CREATE INDEX IF NOT EXISTS idx_cards_owned_by_dropped_at ON cards(owned_by, dropped_at);
 
             CREATE UNIQUE INDEX IF NOT EXISTS uq_cards_series_character_set_serial
             ON cards(series, character, set_id, serial_number);
@@ -458,9 +459,9 @@ class DB:
 
         order = flt.get("o", "d")
         if order == "s":
-            order_by = "c.series ASC, c.character ASC, c.set_id ASC, c.serial_number DESC"
+            order_by = "c.series ASC, c.character ASC, c.set_id ASC, c.dropped_at DESC"
         else:
-            order_by = "c.serial_number DESC"
+            order_by = "c.dropped_at DESC"
 
         sql = f"""
         SELECT
@@ -562,7 +563,7 @@ class DB:
             LEFT JOIN card_tags ct ON ct.card_uid = c.card_uid
             LEFT JOIN tags t ON t.id = ct.tag_id
             WHERE c.owned_by=?
-            ORDER BY c.serial_number DESC
+            ORDER BY c.dropped_at DESC
             """, (str(user_id),))
             return await cur.fetchall()
 
@@ -695,7 +696,7 @@ class DB:
             cur = await db.execute("""
                 SELECT * FROM cards
                 WHERE owned_by=?
-                ORDER BY serial_number DESC
+                ORDER BY dropped_at DESC
                 LIMIT 1
             """, (str(user_id),))
             row = await cur.fetchone()
