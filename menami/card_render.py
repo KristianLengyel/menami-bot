@@ -58,15 +58,23 @@ def _truncate(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont
     return text + ell
 
 async def render_card_image(series: str, character: str, serial_number: int, set_id: int,
-                            card_uid: str, image_url: str, fmt="PNG") -> bytes:
-    async with aiohttp.ClientSession() as session:
-        async with session.get(image_url) as resp:
-            if resp.status != 200:
-                raise ValueError(f"Failed to fetch image: {resp.status}")
-            data = await resp.read()
+                            card_uid: str, image_url: str | None, fmt="PNG") -> bytes:
+    base = None
 
-    base = Image.open(io.BytesIO(data)).convert("RGBA")
-    base = base.resize((274, 405), Image.LANCZOS)
+    if image_url:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(image_url) as resp:
+                    if resp.status == 200:
+                        data = await resp.read()
+                        base = Image.open(io.BytesIO(data)).convert("RGBA")
+        except Exception:
+            base = None
+
+    if base is None:
+        base = Image.new("RGBA", (274, 405), (245, 245, 245, 255))
+    else:
+        base = base.resize((274, 405), Image.LANCZOS)
 
     draw = ImageDraw.Draw(base)
 
@@ -77,8 +85,8 @@ async def render_card_image(series: str, character: str, serial_number: int, set
 
     draw.text((10, 10), f"{character}", font=font, fill="black")
     draw.text((10, 35), f"{series}", font=font, fill="black")
-    draw.text((10, 60), f"#{serial_number} • {set_id}", font=font, fill="black")
-    draw.text((10, 85), f"{card_uid}", font=font, fill="black")
+    draw.text((10, 60), f"#{serial_number} • ◈{set_id}", font=font, fill="black")
+    draw.text((10, 85), f"UID: {card_uid}", font=font, fill="black")
 
     buf = io.BytesIO()
     base.save(buf, format=fmt)

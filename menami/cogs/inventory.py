@@ -25,25 +25,21 @@ from ..views import (
 )
 
 async def _render_attachment(bot, card):
-    try:
-        url = await bot.db.get_character_image(card["series"], card["character"], int(card["set_id"])) \
-              or await bot.db.get_character_image_any(card["series"], card["character"])
-        if not url:
-            return None
+    url = await bot.db.get_character_image(card["series"], card["character"], int(card["set_id"]))
+    if not url:
+        url = await bot.db.get_character_image_any(card["series"], card["character"])
 
-        img_bytes = await render_card_image(
-            series=card["series"],
-            character=card["character"],
-            serial_number=int(card["serial_number"]),
-            set_id=int(card["set_id"]),
-            card_uid=card["card_uid"],
-            image_url=url,
-            fmt="PNG",
-        )
-        fname = f"{card['card_uid']}.png"
-        return discord.File(io.BytesIO(img_bytes), filename=fname), fname
-    except Exception:
-        return None
+    img_bytes = await render_card_image(
+        series=card["series"],
+        character=card["character"],
+        serial_number=int(card["serial_number"]),
+        set_id=int(card["set_id"]),
+        card_uid=card["card_uid"],
+        image_url=url,
+        fmt="PNG",
+    )
+    fname = f"{card['card_uid']}.png"
+    return discord.File(io.BytesIO(img_bytes), filename=fname), fname
 
 def parse_collection_filters(text: str) -> dict:
     f: dict = {}
