@@ -1,13 +1,45 @@
-# menami/card_render.py
 from __future__ import annotations
 import io
 from typing import Tuple
 import aiohttp
+import os
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 CARD_W, CARD_H = 274, 405
+CUT_W, CUT_H = 211, 314
 PAD = 10
 IMG_BOX = (PAD, 70, CARD_W - PAD, CARD_H - 85)
+
+FRAME_CUTOUTS: dict[int, tuple[int, int, int, int]] = {
+    1: ((CARD_W - CUT_W) // 2, (CARD_H - CUT_H) // 2, CUT_W, CUT_H),
+    2: ((CARD_W - CUT_W) // 2, (CARD_H - CUT_H) // 2, CUT_W, CUT_H),
+    3: ((CARD_W - CUT_W) // 2, (CARD_H - CUT_H) // 2, CUT_W, CUT_H),
+    4: ((CARD_W - CUT_W) // 2, (CARD_H - CUT_H) // 2, CUT_W, CUT_H),
+    5: ((CARD_W - CUT_W) // 2, (CARD_H - CUT_H) // 2, CUT_W, CUT_H),
+}
+
+TEXT_BOXES: dict[int, dict[str, tuple[int, int, int, int]]] = {
+    1: {  # 1.png
+        "uid": (55 - 15, 5 + 5, 189 - 15, 25 + 5),
+        "br":  (145 - 15, 370 - 15, 250 - 15, 390 - 15),
+    },
+    2: {  # 2.png
+        "uid": (50 - 15, 5 + 5, 195 - 15, 27 + 5),
+        "br":  (145 - 15, 370 - 15, 250 - 15, 390 - 15),
+    },
+    3: {  # 3.png
+        "uid": (45 - 15, 5 + 5, 200 - 15, 27 + 5),
+        "br":  (145 - 15, 370 - 15, 250 - 15, 390 - 15),
+    },
+    4: {  # 4.png
+        "uid": (43 - 15, 5 + 5, 201 - 15, 27 + 5),
+        "br":  (145 - 15, 370 - 15, 250 - 15, 390 - 15),
+    },
+    5: {  # 5.png
+        "uid": (49 - 15, 5 + 5, 195 - 15, 29 + 5),
+        "br":  (145 - 15, 370 - 15, 250 - 15, 390 - 15),
+    },
+}
 
 BG_COLOR     = (18, 24, 38)
 PANEL_COLOR  = (245, 238, 220)
@@ -16,6 +48,32 @@ ACCENT       = (208, 180, 120)
 
 FONT_PATH_BOLD = "assets/fonts/Alkia.ttf"
 FONT_PATH_REG  = "assets/fonts/Alkia.ttf"
+
+FRAME_DIR = "assets/frames"
+
+def _text_boxes_for_set(set_id: int) -> tuple[tuple[int,int,int,int], tuple[int,int,int,int]]:
+    spec = TEXT_BOXES.get(int(set_id))
+    if not spec:
+        uid_box = (70, 0, 204, 22)
+        br_box  = (160, 385, 265, 405)
+        return uid_box, br_box
+    return spec["uid"], spec["br"]
+
+def _cutout_for_set(set_id: int) -> tuple[int, int, int, int]:
+    return FRAME_CUTOUTS.get(int(set_id), ((CARD_W - CUT_W) // 2, (CARD_H - CUT_H) // 2, CUT_W, CUT_H))
+
+def _load_frame_for_set(set_id: int) -> Image.Image | None:
+    import os
+    path = os.path.join(FRAME_DIR, f"{int(set_id)}.png")
+    if not os.path.exists(path):
+        return None
+    try:
+        im = Image.open(path).convert("RGBA")
+        if im.size != (CARD_W, CARD_H):
+            im = im.resize((CARD_W, CARD_H), Image.LANCZOS)
+        return im
+    except Exception:
+        return None
 
 async def _fetch_image(url: str) -> Image.Image:
     async with aiohttp.ClientSession() as s:
@@ -59,37 +117,90 @@ def _truncate(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont
 
 async def render_card_image(series: str, character: str, serial_number: int, set_id: int,
                             card_uid: str, image_url: str | None, fmt="PNG") -> bytes:
-    base = None
+    card = Image.new("RGBA", (CARD_W, CARD_H), (0, 0, 0, 0))
 
+    # --- load character art ---
+    art = None
     if image_url:
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(image_url) as resp:
                     if resp.status == 200:
                         data = await resp.read()
-                        base = Image.open(io.BytesIO(data)).convert("RGBA")
+                        art = Image.open(io.BytesIO(data)).convert("RGBA")
         except Exception:
-            base = None
+            art = None
+    if art is None:
+        art = Image.new("RGBA", (CUT_W, CUT_H), (230, 230, 230, 255))
 
-    if base is None:
-        base = Image.new("RGBA", (274, 405), (245, 245, 245, 255))
-    else:
-        base = base.resize((274, 405), Image.LANCZOS)
+    # --- fit art into cutout ---
+    x, y, w, h = _cutout_for_set(set_id)
+    scale = max(w / art.width, h / art.height)
+    art = art.resize((int(art.width * scale), int(art.height * scale)), Image.LANCZOS)
+    cx = (art.width - w) // 2
+    cy = (art.height - h) // 2
+    art = art.crop((cx, cy, cx + w, cy + h))
+    card.alpha_composite(art, (x, y))
 
-    draw = ImageDraw.Draw(base)
+    # --- overlay frame ---
+    frame = _load_frame_for_set(set_id)
+    if frame is not None:
+        card.alpha_composite(frame)
 
+    # --- text drawing ---
+    draw = ImageDraw.Draw(card)
     try:
-        font = ImageFont.truetype("arial.ttf", 18)
-    except:
-        font = ImageFont.load_default()
+        font_name   = ImageFont.truetype(FONT_PATH_BOLD, 22)   # character name
+        font_series = ImageFont.truetype(FONT_PATH_REG, 18)    # series
+        font_uid    = ImageFont.truetype(FONT_PATH_REG, 14)    # uid box
+        font_small  = ImageFont.truetype(FONT_PATH_REG, 12)    # serial/set
+    except Exception:
+        font_name = font_series = font_uid = font_small = ImageFont.load_default()
 
-    draw.text((10, 10), f"{character}", font=font, fill="black")
-    draw.text((10, 35), f"{series}", font=font, fill="black")
-    draw.text((10, 60), f"#{serial_number} • {set_id}", font=font, fill="black")
-    draw.text((10, 85), f"{card_uid}", font=font, fill="black")
+    # Colors
+    BLACK  = (0, 0, 0, 255)
+    YELLOW = (255, 215, 64, 255)
+    WHITE  = (255, 255, 255, 255)
 
+    # Panels for name & series (fixed areas, centered)
+    name_rect   = (18, 40, CARD_W - 18, 90)             # top panel
+    series_rect = (18, CARD_H - 100, CARD_W - 18, CARD_H - 60)  # above bottom
+
+    def draw_centered(text: str, rect, font, fill):
+        l, t, r, b = rect
+        s = _truncate(draw, text, font, r - l - 10)
+        tw = draw.textlength(s, font=font)
+        th = font.getbbox(s)[3] - font.getbbox(s)[1]
+        tx = l + (r - l - tw) / 2
+        ty = t + (b - t - th) / 2
+        draw.text((tx, ty), s, font=font, fill=fill)
+
+    # --- 1. Character name (centered, black) ---
+    draw_centered(str(character), name_rect, font_name, BLACK)
+
+    # --- 2. Series name (centered, black) ---
+    draw_centered(str(series), series_rect, font_series, BLACK)
+
+    # --- 3. UID in top black box (yellow) ---
+    uid_box, br_box = _text_boxes_for_set(set_id)
+    draw_centered(str(card_uid), uid_box, font_uid, YELLOW)
+
+    # --- 4. Serial/Set in bottom-right black box (yellow + white) ---
+    l, t, r, b = br_box
+    serial_text = f"#{int(serial_number)} • "
+    set_text    = f"{int(set_id)}"
+    w_serial = draw.textlength(serial_text, font=font_small)
+    w_set    = draw.textlength(set_text, font=font_small)
+    total_w  = w_serial + w_set
+    x_start = r - total_w
+    y_mid = t + (b - t - (font_small.getbbox("A")[3] - font_small.getbbox("A")[1])) / 2
+
+    draw.text((x_start, y_mid), serial_text, font=font_small, fill=YELLOW)
+    draw.text((x_start + w_serial, y_mid), set_text, font=font_small, fill=WHITE)
+
+    # --- export ---
     buf = io.BytesIO()
-    base.save(buf, format=fmt)
+    card.save(buf, format=fmt)
     return buf.getvalue()
 
 # --- for /drop (836x419 WEBP) ---
