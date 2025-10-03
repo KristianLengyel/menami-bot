@@ -61,7 +61,6 @@ class DB:
                 UNIQUE(user_id, name)
             );
 
-            -- One-tag-per-card model (as in your original schema)
             CREATE TABLE IF NOT EXISTS card_tags(
                 card_uid TEXT NOT NULL,
                 tag_id INTEGER NOT NULL,
@@ -92,14 +91,13 @@ class DB:
             INSERT OR IGNORE INTO meta(key, value) VALUES('editions_max', '5');
             INSERT OR IGNORE INTO meta(key, value) VALUES('edition_weights', '[1,2,3,5,9]');
             """)
-
             cols = {row[1] for row in await (await db.execute("PRAGMA table_info(users)")).fetchall()}
             for col in ["gems", "tickets", "dust_damaged", "dust_poor", "dust_good", "dust_excellent", "dust_mint"]:
                 if col not in cols:
                     await db.execute(f"ALTER TABLE users ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
             await db.commit()
 
-    # ---------- Content management ----------
+    # ---- content helpers ----
     async def insert_series(self, name: str) -> int:
         async with aiosqlite.connect(self.path) as db:
             await db.execute("INSERT OR IGNORE INTO series(name) VALUES(?)", (name,))
@@ -113,9 +111,7 @@ class DB:
             await db.execute("INSERT OR IGNORE INTO series(name) VALUES(?)", (series_name,))
             cur = await db.execute("SELECT id FROM series WHERE name=?", (series_name,))
             series_id = int((await cur.fetchone())[0])
-            await db.execute("""
-                INSERT OR IGNORE INTO characters(series_id, name) VALUES(?, ?)
-            """, (series_id, character_name))
+            await db.execute("INSERT OR IGNORE INTO characters(series_id, name) VALUES(?, ?)", (series_id, character_name))
             await db.commit()
 
     async def random_series_character(self) -> tuple[str, str] | None:
@@ -130,7 +126,7 @@ class DB:
             row = await cur.fetchone()
             return (row[0], row[1]) if row else None
 
-    # ---------- Meta ----------
+    # ---- meta ----
     async def next_serial(self) -> int:
         async with aiosqlite.connect(self.path) as db:
             cur = await db.execute("SELECT value FROM meta WHERE key='next_serial'")
@@ -140,7 +136,6 @@ class DB:
             await db.commit()
             return n
 
-    # ---------- Meta helpers ----------
     async def get_meta(self, key: str) -> str | None:
         async with aiosqlite.connect(self.path) as db:
             cur = await db.execute("SELECT value FROM meta WHERE key=?", (key,))
@@ -200,7 +195,7 @@ class DB:
         await self.set_meta("editions_max", str(int(n)))
         await self.set_meta("edition_weights", json.dumps(weights))
 
-    # ---------- Users ----------
+    # ---- users ----
     async def ensure_user(self, user_id: int):
         async with aiosqlite.connect(self.path) as db:
             await db.execute("""
@@ -239,7 +234,7 @@ class DB:
                 "dust_mint": int(dm),
             }
 
-    # ---------- Tags ----------
+    # ---- tags ----
     async def create_tag(self, user_id: int, name: str, emoji: str) -> bool:
         async with aiosqlite.connect(self.path) as db:
             try:
@@ -310,7 +305,7 @@ class DB:
             row = await cur.fetchone()
             return row[0] if row else "◾"
 
-    # ---------- Cards ----------
+    # ---- cards ----
     async def inventory_filtered(self, user_id: int, flt: dict):
         where = ["c.owned_by=?"]
         params = [str(user_id)]
@@ -386,8 +381,7 @@ class DB:
             cur = await db.execute("""
                 UPDATE cards
                    SET grabbed_by=?, owned_by=?, grab_delay=?
-                 WHERE card_uid=?
-                   AND grabbed_by IS NULL
+                 WHERE card_uid=? AND grabbed_by IS NULL
             """, (str(claimer_id), str(claimer_id), delay, card_uid))
             await db.commit()
             return cur.rowcount == 1
@@ -443,7 +437,6 @@ class DB:
 
             owned_by, stars, set_id, series, character, grabbed_by, grab_delay = row
             stars = int(stars)
-
             reward = BURN_REWARD_BY_STARS.get(stars, 0)
 
             from datetime import datetime, timezone
@@ -465,7 +458,6 @@ class DB:
             """, (owner_id, reward))
 
             await db.execute(f"UPDATE users SET {dust_col} = {dust_col} + 1 WHERE user_id=?", (owner_id,))
-
             await db.commit()
             return reward
 
@@ -565,3 +557,54 @@ class DB:
                 return None
             cols = [c[0] for c in cur.description]
             return dict(zip(cols, row))
+
+    # ---------- transactional upgrade ----------
+    async def perform_upgrade(
+        self,
+        user_id: int,
+        card_uid: str,
+        gold_cost: int,
+        dust_quality: str,
+        dust_cost: int,
+        new_stars: int,
+    ) -> bool:
+        dust_col = f"dust_{dust_quality}"
+        new_condition = QUALITY_BY_STARS.get(int(new_stars), "damaged")
+
+        async with aiosqlite.connect(self.path) as db:
+            try:
+                await db.execute("BEGIN IMMEDIATE")
+
+                cur = await db.execute("SELECT owned_by, stars FROM cards WHERE card_uid=?", (card_uid,))
+                row = await cur.fetchone()
+                if not row or row[0] != str(user_id):
+                    await db.execute("ROLLBACK")
+                    return False
+
+                cur = await db.execute(
+                    f"SELECT coins, {dust_col} FROM users WHERE user_id=?",
+                    (user_id,)
+                )
+                urow = await cur.fetchone()
+                if not urow:
+                    await db.execute("ROLLBACK")
+                    return False
+                coins, dust_qty = int(urow[0]), int(urow[1])
+                if coins < gold_cost or dust_qty < dust_cost:
+                    await db.execute("ROLLBACK")
+                    return False
+
+                await db.execute(
+                    f"UPDATE users SET coins = coins - ?, {dust_col} = {dust_col} - ? WHERE user_id=?",
+                    (int(gold_cost), int(dust_cost), user_id)
+                )
+                await db.execute(
+                    "UPDATE cards SET stars=?, condition=? WHERE card_uid=?",
+                    (int(new_stars), new_condition, card_uid)
+                )
+
+                await db.commit()
+                return True
+            except Exception:
+                await db.execute("ROLLBACK")
+                return False

@@ -1,7 +1,7 @@
 from __future__ import annotations
+import shlex
 from typing import List, Tuple
 import discord
-import shlex
 from discord import app_commands
 from discord.ext import commands
 
@@ -10,13 +10,14 @@ from ..embeds import (
     build_simple_cardinfo_embed,
     build_character_lookup_embed,
     build_burn_preview_embed,
+    build_upgrade_preview_embed,
 )
-
 from ..views import (
     InventoryView,
     CollectionView,
     ConfirmBurnView,
     balances_to_items,
+    UpgradeView,
 )
 
 def parse_collection_filters(text: str) -> dict:
@@ -37,42 +38,32 @@ def parse_collection_filters(text: str) -> dict:
         low = arg.lower()
 
         if low.startswith("s:"):
-            f["s"] = arg[2:].strip()
-            continue
+            f["s"] = arg[2:].strip(); continue
 
         if low.startswith("c:"):
-            f["c"] = arg[2:].strip()
-            continue
+            f["c"] = arg[2:].strip(); continue
 
         if low.startswith("q>="):
             try:
-                f["q_op"] = ">="
-                f["q_val"] = int(arg[3:])
-            except ValueError:
-                pass
+                f["q_op"] = ">="; f["q_val"] = int(arg[3:])
+            except ValueError: pass
             continue
 
         if low.startswith("q<="):
             try:
-                f["q_op"] = "<="
-                f["q_val"] = int(arg[3:])
-            except ValueError:
-                pass
+                f["q_op"] = "<="; f["q_val"] = int(arg[3:])
+            except ValueError: pass
             continue
 
         if low.startswith("q:"):
             try:
                 f["q"] = int(arg[2:])
-            except ValueError:
-                pass
+            except ValueError: pass
             continue
 
         if low.startswith("o:"):
             val = low[2:]
-            if val in ("s", "series"):
-                f["o"] = "s"
-            else:
-                f["o"] = "d"
+            f["o"] = "s" if val in ("s", "series") else "d"
             continue
 
         if low.startswith("t:"):
@@ -83,8 +74,7 @@ def parse_collection_filters(text: str) -> dict:
         if low.startswith("e:"):
             try:
                 f["e"] = int(arg[2:])
-            except ValueError:
-                pass
+            except ValueError: pass
             continue
 
     return f
@@ -93,6 +83,7 @@ class InventoryCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
+    # -------- Collection --------
     @app_commands.command(name="collection", description="Show a user's collection.")
     @app_commands.describe(user="User to view, defaults to you")
     async def slash_collection(self, interaction: discord.Interaction, user: discord.User | None = None):
@@ -119,6 +110,7 @@ class InventoryCog(commands.Cog):
         view = CollectionView(self.bot, target, rows)
         await ctx.send(embed=view.build_embed(), view=view)
 
+    # -------- Inventory --------
     @app_commands.command(name="inventory", description="Show your items (coin, gem, ticket) with pagination.")
     @app_commands.describe(user="User to view, defaults to you")
     async def slash_inventory(self, interaction: discord.Interaction, user: discord.User | None = None):
@@ -136,6 +128,7 @@ class InventoryCog(commands.Cog):
         view = InventoryView(self.bot, target, items_all)
         await ctx.send(embed=view.build_embed(), view=view)
 
+    # -------- View / Give --------
     @app_commands.command(name="view", description="View a card by its ID.")
     @app_commands.describe(card_id="Card UID (leave empty for latest)")
     async def slash_view(self, interaction: discord.Interaction, card_id: str | None = None):
@@ -143,10 +136,8 @@ class InventoryCog(commands.Cog):
             card = await self.bot.db.get_card(card_id.strip())
         else:
             card = await self.bot.db.get_latest_card(interaction.user.id)
-
         if not card:
             return await interaction.response.send_message("Card not found.", ephemeral=True)
-
         embed = format_card_embed(card, claimed=card["grabbed_by"] is not None)
         await interaction.response.send_message(embed=embed)
 
@@ -159,6 +150,7 @@ class InventoryCog(commands.Cog):
         await self.bot.db.ensure_user(user.id)
         await interaction.response.send_message(f"Transferred `{card_id}` to {user.mention}.")
 
+    # -------- Burn --------
     @app_commands.command(name="burn", description="Burn a card for coins and dust (with confirmation).")
     @app_commands.describe(card_id="Card UID (leave empty for latest)")
     async def slash_burn(self, interaction: discord.Interaction, card_id: str | None = None):
@@ -197,6 +189,44 @@ class InventoryCog(commands.Cog):
         sent = await ctx.send(embed=embed, view=view)
         view.message = sent
 
+    # -------- Upgrade --------
+    @app_commands.command(name="upgrade", description="Preview and attempt an upgrade for a card.")
+    @app_commands.describe(card_id="Card UID (leave empty for latest)")
+    async def slash_upgrade(self, interaction: discord.Interaction, card_id: str | None = None):
+        if card_id:
+            card = await self.bot.db.get_card(card_id.strip())
+        else:
+            card = await self.bot.db.get_latest_card(interaction.user.id)
+
+        if not card:
+            return await interaction.response.send_message("Card not found.", ephemeral=True)
+        if card.get("owned_by") != str(interaction.user.id):
+            return await interaction.response.send_message("You don't own that card.", ephemeral=True)
+
+        preview = build_upgrade_preview_embed(interaction.user, card)
+        view = UpgradeView(self.bot, interaction.user.id, card["card_uid"])
+        await interaction.response.send_message(embed=preview, view=view)
+        sent = await interaction.original_response()
+        view.message = sent
+
+    @commands.command(name="upgrade", aliases=["mup", "up"])
+    async def cmd_upgrade(self, ctx: commands.Context, card_id: str | None = None):
+        if card_id:
+            card = await self.bot.db.get_card(card_id.strip())
+        else:
+            card = await self.bot.db.get_latest_card(ctx.author.id)
+
+        if not card:
+            return await ctx.send("Card not found.")
+        if card.get("owned_by") != str(ctx.author.id):
+            return await ctx.send("You don't own that card.")
+
+        preview = build_upgrade_preview_embed(ctx.author, card)
+        view = UpgradeView(self.bot, ctx.author.id, card["card_uid"])
+        sent = await ctx.send(embed=preview, view=view)
+        view.message = sent
+
+    # -------- Misc view helpers --------
     @commands.command(name="view", aliases=["mv", "v"])
     async def cmd_view(self, ctx: commands.Context, card_id: str | None = None):
         if card_id:
@@ -223,6 +253,7 @@ class InventoryCog(commands.Cog):
         embed = format_card_embed(card, claimed=card["grabbed_by"] is not None)
         await ctx.send(embed=embed)
 
+    # -------- Lookup & Tags (unchanged) --------
     @commands.command(name="lookup", aliases=["mlu", "lu"])
     async def cmd_lookup(self, ctx: commands.Context, *, query: str | None = None):
         if not query:

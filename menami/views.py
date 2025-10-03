@@ -1,13 +1,21 @@
 from __future__ import annotations
 from typing import List, Tuple
 import math
+import random
 import discord
 from discord.ext import commands
-from .embeds import build_burn_preview_embed, build_burn_result_embed
+
+from .embeds import (
+    build_burn_result_embed,
+    build_upgrade_preview_embed,
+    build_upgrade_outcome_embed,
+)
+from .config import UPGRADE_RULES, QUALITY_BY_STARS
 from .helpers import stars_to_str
 
 PAGE_SIZE_ITEMS = 10
 PAGE_SIZE_COLLECTION = 10
+
 
 def page_range_text(page: int, total: int, page_size: int, noun: str) -> str:
     if total == 0:
@@ -16,18 +24,22 @@ def page_range_text(page: int, total: int, page_size: int, noun: str) -> str:
     end = min((page + 1) * page_size, total)
     return f"Showing {noun} {start}–{end} of {total}"
 
+
 def slice_page(items: List[str], page: int, page_size: int) -> List[str]:
     start = page * page_size
     end = start + page_size
     return items[start:end]
 
+
 def format_inventory_header(user: discord.abc.User) -> str:
     return "## Inventory\n" f"Items carried by {user.mention}\n\n"
+
 
 def format_items_page(items: List[str]) -> str:
     if not items:
         return ""
     return "\n".join(items) + "\n"
+
 
 def format_collection_page(rows: list[tuple], page: int, page_size: int) -> str:
     start = page * page_size
@@ -41,17 +53,18 @@ def format_collection_page(rows: list[tuple], page: int, page_size: int) -> str:
     for r in page_rows:
         uid, serial, stars, set_id, series, character, _condition, tag_emoji = r
 
-        stars_str  = stars_to_str(int(stars))
-        uid_box    = f"`{uid}`"
-        stars_box  = f"`{stars_str}`"
+        stars_str = stars_to_str(int(stars))
+        uid_box = f"`{uid}`"
+        stars_box = f"`{stars_str}`"
         serial_box = f"`#{serial}`"
-        setid_box  = f"`◈{set_id}`"
+        setid_box = f"`◈{set_id}`"
 
         lines.append(
             f"{tag_emoji} {uid_box} · {stars_box} · {serial_box} · {setid_box} · {series} · **{character}**"
         )
 
     return "\n".join(lines)
+
 
 def balances_to_items(bal: dict) -> List[str]:
     base = [
@@ -72,6 +85,7 @@ def balances_to_items(bal: dict) -> List[str]:
         if qty > 0
     ]
     return base + dust_lines
+
 
 class InventoryView(discord.ui.View):
     def __init__(self, bot: commands.Bot, target: discord.abc.User, items: List[str], *, ephemeral: bool = False):
@@ -135,6 +149,7 @@ class InventoryView(discord.ui.View):
         self.page = self.pages - 1
         await self.refresh(interaction)
 
+
 class CollectionView(discord.ui.View):
     def __init__(self, bot: commands.Bot, target: discord.abc.User, rows: List[Tuple], *, ephemeral: bool = False):
         super().__init__(timeout=120)
@@ -194,6 +209,7 @@ class CollectionView(discord.ui.View):
         self.page = self.pages - 1
         await self.refresh(interaction)
 
+
 class ConfirmBurnView(discord.ui.View):
     def __init__(self, bot: commands.Bot, requester_id: int, card_uid: str, stars: int):
         super().__init__(timeout=30)
@@ -202,6 +218,7 @@ class ConfirmBurnView(discord.ui.View):
         self.card_uid = card_uid
         self.stars = stars
         self._done = False
+        self.message: discord.Message | None = None
 
     async def interaction_guard(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.requester_id:
@@ -233,18 +250,120 @@ class ConfirmBurnView(discord.ui.View):
         await self.finalize(interaction, interaction.message.embeds[0], discord.Color.green(), "The card has been burned.")
 
     async def on_timeout(self):
-        if self._done:
-            return
-        try:
-            msg = self.message
-        except AttributeError:
+        if self._done or not self.message:
             return
         for c in self.children:
             if isinstance(c, discord.ui.Button):
                 c.disabled = True
-        base = msg.embeds[0] if msg.embeds else discord.Embed(title="Burn Card", color=discord.Color.dark_grey())
+        base = self.message.embeds[0] if self.message.embeds else discord.Embed(title="Burn Card", color=discord.Color.dark_grey())
         timed = build_burn_result_embed(base, "Card burning timed out.", discord.Color.red())
         try:
-            await msg.edit(embed=timed, view=self)
+            await self.message.edit(embed=timed, view=self)
+        except Exception:
+            pass
+
+
+# ===================== UPGRADE =====================
+
+class UpgradeView(discord.ui.View):
+    def __init__(self, bot: commands.Bot, requester_id: int, card_uid: str):
+        super().__init__(timeout=60)
+        self.bot = bot
+        self.requester_id = requester_id
+        self.card_uid = card_uid
+        self.message: discord.Message | None = None
+
+    async def _fetch_card(self):
+        return await self.bot.db.get_card(self.card_uid)
+
+    async def _ensure_owner(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Only the requester can use these buttons.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(emoji="🔨", style=discord.ButtonStyle.secondary, custom_id="upgrade_hammer")
+    async def hammer(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._ensure_owner(interaction):
+            return
+
+        card = await self._fetch_card()
+        if not card:
+            await interaction.response.edit_message(content="Card not found.", embed=None, view=None)
+            return
+        if str(interaction.user.id) != card.get("owned_by"):
+            await interaction.response.send_message("You don't own this card.", ephemeral=True)
+            return
+
+        curr = int(card["stars"])
+        rule = UPGRADE_RULES.get(curr)
+        if rule is None:
+            preview = build_upgrade_preview_embed(interaction.user, card)
+            await interaction.response.edit_message(embed=preview, view=None)
+            return
+
+        items = await self.bot.db.get_items(interaction.user.id)
+        gold_cost = int(rule["gold"])
+        dust_cost = int(rule["dust"])
+        target_stars = int(rule["to"])
+        dust_quality = QUALITY_BY_STARS.get(target_stars, "damaged")
+        dust_col = f"dust_{dust_quality}"
+
+        if items.get("coins", 0) < gold_cost or items.get(dust_col, 0) < dust_cost:
+            missing = []
+            if items.get("coins", 0) < gold_cost:
+                missing.append(f"💰 {gold_cost - items.get('coins', 0)} Gold")
+            if items.get(dust_col, 0) < dust_cost:
+                missing.append(f"✨ {dust_cost - items.get(dust_col, 0)} Dust ({stars_to_str(target_stars)})")
+            await interaction.response.send_message("Not enough resources: " + ", ".join(missing), ephemeral=True)
+            return
+
+        success = random.random() < float(rule["chance"])
+        fail_to = 0 if rule["fail"] == "damaged" else curr
+        new_stars = target_stars if success else fail_to
+
+        ok = await self.bot.db.perform_upgrade(
+            user_id=interaction.user.id,
+            card_uid=self.card_uid,
+            gold_cost=gold_cost,
+            dust_quality=dust_quality,
+            dust_cost=dust_cost,
+            new_stars=new_stars,
+        )
+        if not ok:
+            await interaction.response.send_message("Upgrade could not be applied (state changed?). Try again.", ephemeral=True)
+            return
+
+        outcome = build_upgrade_outcome_embed(discord.Embed(title="Card Upgrade"), success, new_stars)
+        await interaction.response.edit_message(embed=outcome, view=None)
+
+        updated = await self._fetch_card()
+        preview_next = build_upgrade_preview_embed(interaction.user, updated)
+        if UPGRADE_RULES.get(int(updated["stars"])) is not None:
+            new_view = UpgradeView(self.bot, self.requester_id, self.card_uid)
+            msg = await interaction.followup.send(embed=preview_next, view=new_view)
+            new_view.message = msg
+        else:
+            await interaction.followup.send(embed=preview_next)
+
+    @discord.ui.button(emoji="❌", style=discord.ButtonStyle.secondary, custom_id="upgrade_cancel")
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._ensure_owner(interaction):
+            return
+        e = discord.Embed(
+            title="Card Upgrade",
+            description=f"{interaction.user.mention} cancelled the upgrade.",
+            color=discord.Color.dark_grey(),
+        )
+        await interaction.response.edit_message(embed=e, view=None)
+
+    async def on_timeout(self):
+        if not self.message:
+            return
+        for c in self.children:
+            if isinstance(c, discord.ui.Button):
+                c.disabled = True
+        try:
+            await self.message.edit(view=self)
         except Exception:
             pass

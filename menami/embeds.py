@@ -1,8 +1,10 @@
 import discord
 from .helpers import stars_to_str, iso_utc_to_text
-from .config import EMOJIS, CLAIM_WINDOW_S, BURN_REWARD_BY_STARS
+from .config import QUALITY_BY_STARS, BURN_REWARD_BY_STARS, UPGRADE_RULES
 
-def format_card_embed(card: dict, claimed: bool) -> discord.Embed:
+# ========= Card detail & drops =========
+
+def format_card_embed(card: dict, claimed: bool):
     ts_text = iso_utc_to_text(card["dropped_at"])
     owner = f"<@{card['owned_by']}>" if card["owned_by"] else "—"
     grabbed = f"<@{card['grabbed_by']}>" if card["grabbed_by"] else "—"
@@ -28,16 +30,22 @@ def format_card_embed(card: dict, claimed: bool) -> discord.Embed:
         f"Dropped in **{card['condition']}** condition",
     ]
     if card["grab_delay"] is not None:
-        desc_lines.append(f"Grabbed after **{float(card['grab_delay']):.2f} seconds**")
+        try:
+            desc_lines.append(f"Grabbed after **{float(card['grab_delay']):.2f} seconds**")
+        except Exception:
+            pass
 
     embed = discord.Embed(
         title="Card Details",
         description="\n".join([title, "", *desc_lines]),
         color=discord.Color.gold()
     )
+    if claimed and card["grab_delay"] is None:
+        embed.set_footer(text="Claim processed.")
     return embed
 
-def build_triple_drop_embed(cards: list[dict]) -> discord.Embed:
+def build_triple_drop_embed(cards: list[dict]):
+    from .config import EMOJIS, CLAIM_WINDOW_S
     lines = []
     for idx, c in enumerate(cards, start=1):
         stars_str = stars_to_str(int(c["stars"]))
@@ -62,9 +70,7 @@ def build_simple_cardinfo_embed(card: dict) -> discord.Embed:
 
 def build_character_lookup_embed(stats: dict, edition_index: int) -> discord.Embed:
     e = discord.Embed(title="Character Lookup", color=discord.Color.blurple())
-
     avg = f"{stats['avg_claim_time']:.1f} seconds" if stats["avg_claim_time"] is not None else "N/A"
-
     e.description = (
         f"Character · {stats['character']}\n"
         f"Series · {stats['series']}\n"
@@ -81,18 +87,62 @@ def build_character_lookup_embed(stats: dict, edition_index: int) -> discord.Emb
         f"Circulation (★☆☆☆) · {stats['circ_by_stars'][1]:,}\n"
         f"Circulation (☆☆☆☆) · {stats['circ_by_stars'][0]:,}\n"
     )
-
     total_editions = max(len(stats["editions"]), 1)
     e.set_footer(text=f"Showing edition {edition_index} of {total_editions}")
     return e
 
+# ========= Burn embeds =========
+
 def build_burn_preview_embed(requester: discord.abc.User, stars: int) -> discord.Embed:
     coins = BURN_REWARD_BY_STARS.get(stars, 0)
-    dust = f"✨ 1 Dust ({stars_to_str(stars)})"
-    gold = f"💰 {coins} Gold"
+    dust = f"1 Dust ({stars_to_str(stars)})"
+    gold = f"{coins} Coins"
     desc = f"{requester.mention}, you will receive:\n\n{gold}\n{dust}"
     return discord.Embed(title="Burn Card", description=desc, color=discord.Color.dark_grey())
 
 def build_burn_result_embed(base: discord.Embed, text: str, color: discord.Color) -> discord.Embed:
     e = discord.Embed(title=base.title, description=base.description + f"\n\n{text}", color=color)
     return e
+
+# ========= Upgrade embeds =========
+
+def _upgrade_rule_for(stars: int):
+    return UPGRADE_RULES.get(int(stars))
+
+def build_upgrade_preview_embed(user: discord.abc.User, card: dict) -> discord.Embed:
+    curr = int(card["stars"])
+    rule = _upgrade_rule_for(curr)
+    e = discord.Embed(title="Card Upgrade", color=discord.Color.orange())
+    if rule is None:
+        e.description = (
+            "The upgrade succeeded! The card has been upgraded to **mint** condition.\n\n"
+            f"{user.mention}, you have reached the highest condition for this card."
+        )
+        return e
+
+    to = rule["to"]
+    chance = int(round(rule["chance"] * 100))
+    gold = rule["gold"]
+    dust = rule["dust"]
+    dust_label = f"- {dust} Dust ({stars_to_str(to)})"
+    gold_label = f"- {gold} Gold"
+
+    fail_text = "will not change" if rule["fail"] == "stay" else "will fall to **damaged**"
+    e.description = (
+        f"{user.mention}, upgrading the condition of `{card['card_uid']}` "
+        f"from **{QUALITY_BY_STARS[curr]}** to **{QUALITY_BY_STARS[to]}** has a **{chance}%** chance of succeeding. "
+        f"If this upgrade fails, the card's condition {fail_text}.\n\n"
+        "Attempting the upgrade will cost the following resources:\n"
+        f"-{dust_label}\n"
+        f"-{gold_label}\n\n"
+        "Use the 🔨 button to attempt the upgrade."
+    )
+    return e
+
+def build_upgrade_outcome_embed(base: discord.Embed, success: bool, new_stars: int) -> discord.Embed:
+    if success:
+        text = f"The upgrade succeeded! The card has been upgraded to **{QUALITY_BY_STARS[new_stars]}** condition."
+        return discord.Embed(title=base.title, description=text, color=discord.Color.green())
+    else:
+        text = f"The upgrade failed. The card is now **{QUALITY_BY_STARS[new_stars]}**."
+        return discord.Embed(title=base.title, description=text, color=discord.Color.red())

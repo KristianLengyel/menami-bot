@@ -30,3 +30,10 @@ BURN_REWARD_BY_STARS = {
     3: 63,   # ★★★☆
     4: 124,  # ★★★★
 }
+
+UPGRADE_RULES = {
+    0: {"to": 1, "chance": 0.80, "gold": 50,  "dust": 5, "fail": "stay"},
+    1: {"to": 2, "chance": 0.70, "gold": 100, "dust": 5, "fail": "damaged"},
+    2: {"to": 3, "chance": 0.60, "gold": 250, "dust": 5, "fail": "damaged"},
+    3: {"to": 4, "chance": 0.50, "gold": 500, "dust": 5, "fail": "damaged"},
+}
