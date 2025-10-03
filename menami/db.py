@@ -87,14 +87,56 @@ class DB:
               UNIQUE(series_id, name)
             );
 
+            CREATE TABLE IF NOT EXISTS guild_settings(
+              guild_id TEXT PRIMARY KEY,
+              drop_channel_id TEXT,
+              drop_cooldown_s INTEGER
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_cards_owned_by ON cards(owned_by);
+            CREATE INDEX IF NOT EXISTS idx_cards_series_character ON cards(series, character);
+            CREATE INDEX IF NOT EXISTS idx_cards_series_character_set ON cards(series, character, set_id);
+            CREATE INDEX IF NOT EXISTS idx_burns_series_character ON burns(series, character);
+            CREATE INDEX IF NOT EXISTS idx_burns_series_character_set ON burns(series, character, set_id);
+
             INSERT OR IGNORE INTO meta(key, value) VALUES('next_serial', '1');
             INSERT OR IGNORE INTO meta(key, value) VALUES('editions_max', '5');
             INSERT OR IGNORE INTO meta(key, value) VALUES('edition_weights', '[1,2,3,5,9]');
             """)
-            cols = {row[1] for row in await (await db.execute("PRAGMA table_info(users)")).fetchall()}
+            cols_u = {row[1] for row in await (await db.execute("PRAGMA table_info(users)")).fetchall()}
             for col in ["gems", "tickets", "dust_damaged", "dust_poor", "dust_good", "dust_excellent", "dust_mint"]:
-                if col not in cols:
+                if col not in cols_u:
                     await db.execute(f"ALTER TABLE users ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
+            cols_g = {row[1] for row in await (await db.execute("PRAGMA table_info(guild_settings)")).fetchall()}
+            if "drop_cooldown_s" not in cols_g:
+                await db.execute("ALTER TABLE guild_settings ADD COLUMN drop_cooldown_s INTEGER")
+            await db.commit()
+
+    async def get_drop_channel(self, guild_id: int) -> int | None:
+        async with aiosqlite.connect(self.path) as db:
+            cur = await db.execute("SELECT drop_channel_id FROM guild_settings WHERE guild_id=?", (str(guild_id),))
+            row = await cur.fetchone()
+            return int(row[0]) if row and row[0] is not None else None
+
+    async def set_drop_channel(self, guild_id: int, channel_id: int | None):
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                "INSERT INTO guild_settings(guild_id, drop_channel_id) VALUES(?, ?) "
+                "ON CONFLICT(guild_id) DO UPDATE SET drop_channel_id=excluded.drop_channel_id",
+                (str(guild_id), str(channel_id) if channel_id is not None else None),
+            )
+            await db.commit()
+
+    async def get_drop_cooldown(self, guild_id: int) -> int | None:
+        async with aiosqlite.connect(self.path) as db:
+            cur = await db.execute("SELECT drop_cooldown_s FROM guild_settings WHERE guild_id=?", (str(guild_id),))
+            row = await cur.fetchone()
+            return int(row[0]) if row and row[0] is not None else None
+
+    async def set_drop_cooldown(self, guild_id: int, seconds: int | None):
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("INSERT INTO guild_settings(guild_id) VALUES(?) ON CONFLICT(guild_id) DO NOTHING", (str(guild_id),))
+            await db.execute("UPDATE guild_settings SET drop_cooldown_s=? WHERE guild_id=?", (seconds, str(guild_id)))
             await db.commit()
 
     # ---- content helpers ----

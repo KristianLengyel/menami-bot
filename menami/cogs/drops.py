@@ -13,6 +13,13 @@ class DropsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot: commands.Bot = bot
 
+    async def _get_active_drop_channel(self, guild_id: int) -> int | None:
+        return await self.bot.db.get_drop_channel(guild_id)
+
+    async def _cooldown_for(self, guild_id: int) -> int:
+        v = await self.bot.db.get_drop_cooldown(guild_id)
+        return v if v is not None else DROP_COOLDOWN_S
+
     async def create_three_cards(self, invoker_id: int, guild_id: int):
         cards = []
         for _ in range(3):
@@ -52,10 +59,15 @@ class DropsCog(commands.Cog):
     @app_commands.command(name="drop", description="Drop 3 cards in this channel.")
     async def slash_drop(self, interaction: discord.Interaction):
         ch_id = interaction.channel_id
+        active = await self._get_active_drop_channel(interaction.guild_id)
+        if active is not None and ch_id != active:
+            return await interaction.response.send_message(f"Drops are only allowed in <#{active}>.", ephemeral=True)
+
+        cd = await self._cooldown_for(interaction.guild_id)
         now = time.time()
         last = self.bot.channel_cooldowns.get(ch_id, 0)
-        if now - last < DROP_COOLDOWN_S:
-            remain = int(DROP_COOLDOWN_S - (now - last))
+        if now - last < cd:
+            remain = int(cd - (now - last))
             return await interaction.response.send_message(f"Please wait {remain}s before dropping again in this channel.", ephemeral=True)
 
         await self.bot.db.ensure_user(interaction.user.id)
@@ -80,10 +92,15 @@ class DropsCog(commands.Cog):
     @commands.command(name="d", aliases=["md"])
     async def cmd_drop(self, ctx: commands.Context):
         ch_id = ctx.channel.id
+        active = await self._get_active_drop_channel(ctx.guild.id)
+        if active is not None and ch_id != active:
+            return await ctx.send(f"Drops are only allowed in <#{active}>.")
+
+        cd = await self._cooldown_for(ctx.guild.id)
         now = time.time()
         last = self.bot.channel_cooldowns.get(ch_id, 0)
-        if now - last < DROP_COOLDOWN_S:
-            remain = int(DROP_COOLDOWN_S - (now - last))
+        if now - last < cd:
+            remain = int(cd - (now - last))
             return await ctx.send(f"Please wait {remain}s before dropping again in this channel.")
 
         await self.bot.db.ensure_user(ctx.author.id)

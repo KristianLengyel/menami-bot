@@ -21,6 +21,7 @@ class MenamiBot(commands.Bot):
         await self.load_extension("menami.cogs.drops")
         await self.load_extension("menami.cogs.inventory")
         await self.load_extension("menami.cogs.helpcmd")
+        await self.load_extension("menami.cogs.settings")
         await self.tree.sync()
 
 bot = MenamiBot()
