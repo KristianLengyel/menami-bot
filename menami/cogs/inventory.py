@@ -4,6 +4,9 @@ from typing import List, Tuple
 import discord
 from discord import app_commands
 from discord.ext import commands
+import io
+
+from ..card_render import render_card_image
 
 from ..embeds import (
     format_card_embed,
@@ -20,6 +23,27 @@ from ..views import (
     UpgradeView,
     EditionLookupView,
 )
+
+async def _render_attachment(bot, card):
+    try:
+        url = await bot.db.get_character_image(card["series"], card["character"], int(card["set_id"])) \
+              or await bot.db.get_character_image_any(card["series"], card["character"])
+        if not url:
+            return None
+
+        img_bytes = await render_card_image(
+            series=card["series"],
+            character=card["character"],
+            serial_number=int(card["serial_number"]),
+            set_id=int(card["set_id"]),
+            card_uid=card["card_uid"],
+            image_url=url,
+            fmt="PNG",
+        )
+        fname = f"{card['card_uid']}.png"
+        return discord.File(io.BytesIO(img_bytes), filename=fname), fname
+    except Exception:
+        return None
 
 def parse_collection_filters(text: str) -> dict:
     f: dict = {}
@@ -166,17 +190,20 @@ class InventoryCog(commands.Cog):
             card = await self.bot.db.get_latest_card(interaction.user.id)
         if not card:
             return await interaction.response.send_message("Card not found.", ephemeral=True)
-        embed = format_card_embed(card, claimed=card["grabbed_by"] is not None)
-        await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="give", description="Transfer a card to another user.")
-    @app_commands.describe(card_id="Card UID", user="Recipient")
-    async def slash_give(self, interaction: discord.Interaction, card_id: str, user: discord.User):
-        ok = await self.bot.db.transfer(card_id.strip(), interaction.user.id, user.id)
-        if not ok:
-            return await interaction.response.send_message("You don't own that card or it doesn't exist.", ephemeral=True)
-        await self.bot.db.ensure_user(user.id)
-        await interaction.response.send_message(f"Transferred `{card_id}` to {user.mention}.")
+        embed = format_card_embed(card, claimed=card["grabbed_by"] is not None)
+
+        try:
+            attach = await _render_attachment(self.bot, card)
+        except Exception:
+            attach = None
+
+        if attach:
+            file, fname = attach
+            embed.set_image(url=f"attachment://{fname}")
+            await interaction.response.send_message(embed=embed, file=file)
+        else:
+            await interaction.response.send_message(embed=embed)
 
     # -------- Burn --------
     @app_commands.command(name="burn", description="Burn a card for coins and dust (with confirmation).")
@@ -266,7 +293,13 @@ class InventoryCog(commands.Cog):
             return await ctx.send("Card not found.")
 
         embed = build_simple_cardinfo_embed(card)
-        await ctx.send(embed=embed)
+        attach = await _render_attachment(self.bot, card)
+        if attach:
+            file, fname = attach
+            embed.set_image(url=f"attachment://{fname}")
+            await ctx.send(embed=embed, file=file)
+        else:
+            await ctx.send(embed=embed)
 
     @commands.command(name="cardinfo", aliases=["ci"])
     async def cmd_cardinfo(self, ctx: commands.Context, card_id: str | None = None):
