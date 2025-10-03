@@ -5,28 +5,41 @@
     "Ino Yamanaka", "Gaara", "Temari", "Kankuro", "Jiraiya", "Tsunade", "Orochimaru",
     "Killer B", "Minato Namikaze", "Kushina Uzumaki", "Madara Uchiha", "Obito Uchiha",
     "Nagato (Pain)", "Konan", "Hashirama Senju", "Tobirama Senju", "Hiruzen Sarutobi",
-    "Kabuto Yakushi", "Zabuza Momochi", "Haku", "Deidara", "Sasori", "Kisame Hoshigaki"
+    "Kabuto Yakushi", "Zabuza Momochi", "Haku", "Deidara", "Sasori", "Kisame Hoshigaki",
+    "Might Guy", "Iruka Umino", "Asuma Sarutobi", "Kurenai Yuhi", "Shisui Uchiha",
+    "Yamato", "Sai", "Danzo Shimura", "Hanzo of the Salamander", "Kimimaro", "Jugo",
+    "Suigetsu Hozuki", "Karin", "Konohamaru Sarutobi", "Moegi", "Udon", "Chiyo",
+    "Mei Terumi", "Onoki", "Rasa", "Darui", "C", "Omoi", "Karui", "Samui",
+    "Kaguya Otsutsuki", "Momoshiki Otsutsuki", "Kinshiki Otsutsuki", "Urashiki Otsutsuki"
   ],
   "One Piece": [
     "Monkey D. Luffy", "Roronoa Zoro", "Nami", "Usopp", "Sanji", "Tony Tony Chopper",
     "Nico Robin", "Franky", "Brook", "Jinbe", "Portgas D. Ace", "Gol D. Roger", "Shanks",
     "Buggy", "Dracule Mihawk", "Boa Hancock", "Donquixote Doflamingo", "Crocodile",
     "Rob Lucci", "Kaido", "Big Mom", "Blackbeard", "Trafalgar Law", "Eustass Kid",
-    "Sabo", "Kuzan", "Borsalino (Kizaru)", "Sakazuki", "Smoker",
-    "Tashigi", "Vivi Nefertari", "Carrot", "Yamato", "Marco", "Whitebeard", "Katakuri"
+    "Sabo", "Kuzan", "Borsalino (Kizaru)", "Sakazuki", "Smoker", "Tashigi",
+    "Vivi Nefertari", "Carrot", "Yamato", "Marco", "Whitebeard", "Katakuri",
+    "Perona", "Gecko Moria", "Enel", "Bartholomew Kuma", "Magellan", "Emporio Ivankov",
+    "Bon Clay (Mr. 2)", "Shirahoshi", "Koala", "Kyros", "Rebecca", "Cavendish",
+    "Bartolomeo", "Kin'emon", "Kanjuro", "Raizo", "Ashura Doji", "Oden Kozuki"
   ],
   "Dragon Ball Z / Super": [
     "Goku", "Vegeta", "Gohan", "Piccolo", "Krillin", "Tien Shinhan", "Yamcha",
     "Master Roshi", "Bulma", "Chi-Chi", "Frieza", "Cell", "Majin Buu", "Trunks", "Goten",
     "Android 16", "Android 17", "Android 18", "Beerus", "Whis", "Jiren", "Goku Black",
-    "Zeno", "Broly", "Raditz", "Nappa", "King Kai", "Mr. Satan", "Videl"
+    "Zeno", "Broly", "Raditz", "Nappa", "King Kai", "Mr. Satan", "Videl",
+    "Supreme Kai", "Kibito", "Elder Kai", "Ginyu", "Recoome", "Jeice", "Burter", "Guldo",
+    "Hit", "Toppo", "Caulifla", "Kale", "Cabba", "Zamasu", "Grand Priest",
+    "King Cold", "Cooler", "Shenron", "Pan", "Chi-Chi (Kid)", "Dr. Gero"
   ],
   "Attack on Titan": [
     "Eren Yeager", "Mikasa Ackerman", "Armin Arlert", "Levi Ackerman", "Erwin Smith",
     "Hange Zoe", "Jean Kirstein", "Connie Springer", "Sasha Blouse", "Historia Reiss",
     "Reiner Braun", "Bertholdt Hoover", "Annie Leonhart", "Ymir", "Zeke Yeager",
     "Gabi Braun", "Falco Grice", "Pieck Finger", "Porco Galliard", "Grisha Yeager",
-    "Carla Yeager", "Kenny Ackerman"
+    "Carla Yeager", "Kenny Ackerman", "Dot Pixis", "Nile Dok", "Marco Bott",
+    "Floch Forster", "Keith Shadis", "Petra Ral", "Oluo Bozad", "Gunther Schultz",
+    "Eld Jinn", "Miche Zacharias", "Darius Zackly"
   ],
   "Bleach": [
     "Ichigo Kurosaki", "Rukia Kuchiki", "Renji Abarai", "Uryu Ishida", "Orihime Inoue",
@@ -34,34 +47,42 @@
     "Jushiro Ukitake", "Sosuke Aizen", "Gin Ichimaru", "Kaname Tosen", "Yamamoto Genryusai",
     "Toshiro Hitsugaya", "Rangiku Matsumoto", "Kisuke Urahara", "Yoruichi Shihouin",
     "Grimmjow Jaegerjaquez", "Ulquiorra Cifer", "Coyote Starrk", "Nnoitra Gilga",
-    "Baraggan Louisenbairn", "Tier Harribel", "Retsu Unohana", "Mayuri Kurotsuchi"
+    "Baraggan Louisenbairn", "Tier Harribel", "Retsu Unohana", "Mayuri Kurotsuchi",
+    "Isshin Kurosaki", "Masaki Kurosaki", "Shinji Hirako", "Hiyori Sarugaki",
+    "Rose Otoribashi", "Kensei Muguruma", "Love Aikawa", "Lisa Yadomaru"
   ],
   "Demon Slayer": [
     "Tanjiro Kamado", "Nezuko Kamado", "Zenitsu Agatsuma", "Inosuke Hashibira",
     "Kanao Tsuyuri", "Genya Shinazugawa", "Giyu Tomioka", "Shinobu Kocho", "Kyojuro Rengoku",
     "Tengen Uzui", "Mitsuri Kanroji", "Muichiro Tokito", "Sanemi Shinazugawa", "Gyomei Himejima",
-    "Muzan Kibutsuji", "Akaza", "Doma", "Kokushibo", "Enmu", "Rui"
+    "Muzan Kibutsuji", "Akaza", "Doma", "Kokushibo", "Enmu", "Rui",
+    "Kaigaku", "Gyutaro", "Daki", "Nakime", "Hantengu", "Kyogai", "Sabito", "Makomo", "Urokodaki Sakonji"
   ],
   "Jujutsu Kaisen": [
     "Yuji Itadori", "Megumi Fushiguro", "Nobara Kugisaki", "Satoru Gojo", "Maki Zenin",
     "Toge Inumaki", "Panda", "Kento Nanami", "Suguru Geto", "Mahito", "Ryomen Sukuna",
-    "Aoi Todo", "Mai Zenin", "Choso", "Kinji Hakari", "Yuta Okkotsu"
+    "Aoi Todo", "Mai Zenin", "Choso", "Kinji Hakari", "Yuta Okkotsu",
+    "Rika Orimoto", "Masamichi Yaga", "Noritoshi Kamo", "Naoya Zenin", "Jogo", "Hanami"
   ],
   "Hunter x Hunter": [
     "Gon Freecss", "Killua Zoldyck", "Kurapika", "Leorio Paradinight", "Hisoka Morow",
     "Chrollo Lucilfer", "Illumi Zoldyck", "Meruem", "Komugi", "Neferpitou", "Shaiapouf",
     "Menthuthuyoupi", "Isaac Netero", "Biscuit Krueger", "Kite", "Knuckle Bine",
-    "Shoot McMahon", "Palm Siberia", "Morel", "Novu"
+    "Shoot McMahon", "Palm Siberia", "Morel", "Novu",
+    "Zeno Zoldyck", "Silva Zoldyck", "Kalluto Zoldyck", "Alluka Zoldyck", "Feitan Portor",
+    "Shalnark", "Pakunoda", "Machi Komacine", "Uvogin", "Phinks Magcub"
   ],
   "Fullmetal Alchemist: Brotherhood": [
     "Edward Elric", "Alphonse Elric", "Winry Rockbell", "Roy Mustang", "Riza Hawkeye",
     "Maes Hughes", "Alex Louis Armstrong", "Olivier Mira Armstrong", "Scar",
     "Van Hohenheim", "Izumi Curtis", "King Bradley", "Selim Bradley (Pride)", "Envy",
-    "Lust", "Gluttony", "Greed", "Father"
+    "Lust", "Gluttony", "Greed", "Father",
+    "Solf J. Kimblee", "Fu", "Lan Fan", "Ling Yao", "May Chang", "Paninya", "Maria Ross",
+    "Denny Brosh"
   ],
   "Death Note": [
     "Light Yagami", "L", "Ryuk", "Misa Amane", "Near", "Mello", "Soichiro Yagami",
-    "Teru Mikami", "Rem", "Watari"
+    "Teru Mikami", "Rem", "Watari", "Matt", "Aizawa Shuichi", "Touta Matsuda", "Kanzo Mogi"
   ],
   "My Hero Academia": [
     "Izuku Midoriya", "Katsuki Bakugo", "Shoto Todoroki", "Ochaco Uraraka", "Tenya Iida",
@@ -69,38 +90,43 @@
     "Denki Kaminari", "Kyoka Jiro", "Fumikage Tokoyami", "Yuga Aoyama", "Hanta Sero",
     "Mashirao Ojiro", "Mezo Shoji", "Tomura Shigaraki", "Dabi", "Himiko Toga", "Twice",
     "Mr. Compress", "Spinner", "Endeavor", "Hawks", "Mirio Togata", "Tamaki Amajiki",
-    "Nejire Hado"
+    "Nejire Hado", "Gran Torino", "Sir Nighteye", "Eri", "Present Mic", "Midnight",
+    "Cementoss", "Shigaraki All For One"
   ],
   "Sword Art Online": [
     "Kirito", "Asuna Yuuki", "Sinon", "Leafa", "Alice Zuberg", "Eugeo", "Heathcliff",
-    "Yui", "Klein", "Agil"
+    "Yui", "Klein", "Agil", "Suguha Kirigaya", "Death Gun", "Egil", "Silica", "Lisbeth"
   ],
   "Tokyo Ghoul": [
     "Ken Kaneki", "Touka Kirishima", "Hideyoshi Nagachika", "Rize Kamishiro",
     "Juuzou Suzuya", "Kisho Arima", "Ayato Kirishima", "Shuu Tsukiyama", "Yoshimura",
-    "Nishiki Nishio"
+    "Nishiki Nishio", "Eto Yoshimura", "Hinami Fueguchi", "Koutarou Amon", "Takizawa",
+    "Roma Hoito"
   ],
   "Fairy Tail": [
     "Natsu Dragneel", "Lucy Heartfilia", "Gray Fullbuster", "Erza Scarlet", "Happy",
     "Wendy Marvell", "Carla", "Juvia Lockser", "Gajeel Redfox", "Laxus Dreyar",
     "Makarov Dreyar", "Mirajane Strauss", "Elfman Strauss", "Lisanna Strauss", "Zeref",
-    "Acnologia"
+    "Acnologia", "Cana Alberona", "Freed Justine", "Evergreen", "Bickslow", "Loke",
+    "Ultear Milkovich", "Meredy"
   ],
   "Black Clover": [
     "Asta", "Yuno", "Noelle Silva", "Yami Sukehiro", "Charmy Pappitson",
     "Luck Voltia", "Magna Swing", "Vanessa Enoteca", "Finral Roulacase", "Julius Novachrono",
-    "William Vangeance", "Fuegoleon Vermillion", "Mereoleona Vermillion", "Charlotte Roselei"
+    "William Vangeance", "Fuegoleon Vermillion", "Mereoleona Vermillion", "Charlotte Roselei",
+    "Sekke Bronzazza", "Sally", "Rades Spirito", "Valtos", "Patry", "Licht"
   ],
   "Code Geass": [
     "Lelouch Lamperouge", "C.C.", "Suzaku Kururugi", "Kallen Stadtfeld", "Nunnally Lamperouge",
-    "Jeremiah Gottwald", "Cornelia li Britannia", "Schneizel el Britannia", "Charles zi Britannia"
+    "Jeremiah Gottwald", "Cornelia li Britannia", "Schneizel el Britannia", "Charles zi Britannia",
+    "Euphemia li Britannia", "Shirley Fenette", "Rolo Lamperouge", "Villetta Nu"
   ],
   "Steins;Gate": [
     "Rintarou Okabe", "Kurisu Makise", "Mayuri Shiina", "Itaru Hashida", "Suzuha Amane",
-    "Moeka Kiryuu", "Faris NyanNyan", "Ruka Urushibara"
+    "Moeka Kiryuu", "Faris NyanNyan", "Ruka Urushibara", "Nae Tennouji", "Yuugo Tennouji"
   ],
   "Neon Genesis Evangelion": [
     "Shinji Ikari", "Rei Ayanami", "Asuka Langley Soryu", "Misato Katsuragi", "Gendo Ikari",
-    "Ritsuko Akagi", "Kaworu Nagisa"
+    "Ritsuko Akagi", "Kaworu Nagisa", "Kaji Ryoji", "Fuyutsuki Kozo", "Pen-Pen"
   ]
 }

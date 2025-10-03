@@ -1,6 +1,7 @@
 from __future__ import annotations
 import json
 import aiosqlite
+import random
 from .config import DB_PATH, QUALITY_BY_STARS, BURN_REWARD_BY_STARS
 
 class DB:
@@ -99,6 +100,9 @@ class DB:
             CREATE INDEX IF NOT EXISTS idx_burns_series_character ON burns(series, character);
             CREATE INDEX IF NOT EXISTS idx_burns_series_character_set ON burns(series, character, set_id);
 
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_cards_series_character_set_serial
+            ON cards(series, character, set_id, serial_number);
+                                
             INSERT OR IGNORE INTO meta(key, value) VALUES('next_serial', '1');
             INSERT OR IGNORE INTO meta(key, value) VALUES('editions_max', '5');
             INSERT OR IGNORE INTO meta(key, value) VALUES('edition_weights', '[1,2,3,5,9]');
@@ -111,6 +115,31 @@ class DB:
             if "drop_cooldown_s" not in cols_g:
                 await db.execute("ALTER TABLE guild_settings ADD COLUMN drop_cooldown_s INTEGER")
             await db.commit()
+
+    async def _random_free_serial(self, series: str, character: str, set_id: int, *, max_tries: int = 50) -> int:
+        for _ in range(max_tries):
+            sn = random.randint(1, 9999)
+            async with aiosqlite.connect(self.path) as db:
+                cur = await db.execute(
+                    """SELECT 1 FROM cards
+                       WHERE series=? AND character=? AND set_id=? AND serial_number=? LIMIT 1""",
+                    (series, character, set_id, sn),
+                )
+                if not await cur.fetchone():
+                    return sn
+        used = set()
+        async with aiosqlite.connect(self.path) as db:
+            cur = await db.execute(
+                """SELECT serial_number FROM cards
+                   WHERE series=? AND character=? AND set_id=?""",
+                (series, character, set_id),
+            )
+            rows = await cur.fetchall()
+            used.update(int(r[0]) for r in rows if r and r[0] is not None)
+        for sn in range(1, 10000):
+            if sn not in used:
+                return sn
+        raise RuntimeError("All serial numbers 1..9999 are taken for this edition.")
 
     async def get_drop_channel(self, guild_id: int) -> int | None:
         async with aiosqlite.connect(self.path) as db:
@@ -408,15 +437,49 @@ class DB:
             return await cur.fetchall()
 
     async def insert_dropped_card(self, card: dict):
-        async with aiosqlite.connect(self.path) as db:
-            await db.execute("""
-            INSERT INTO cards(card_uid, serial_number, stars, set_id, series, character, condition,
-                              dropped_at, dropped_in_server, dropped_by, grabbed_by, owned_by, grab_delay)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """, (card["card_uid"], card["serial_number"], card["stars"], card["set_id"], card["series"],
-                  card["character"], card["condition"], card["dropped_at"], card["dropped_in_server"],
-                  card["dropped_by"], None, None, None))
-            await db.commit()
+        series = card["series"]
+        character = card["character"]
+        set_id = int(card["set_id"])
+
+        attempts = 0
+        while True:
+            attempts += 1
+            serial_number = card.get("serial_number")
+            if serial_number is None:
+                serial_number = await self._random_free_serial(series, character, set_id)
+
+            try:
+                async with aiosqlite.connect(self.path) as db:
+                    await db.execute("BEGIN IMMEDIATE")
+                    await db.execute("""
+                        INSERT INTO cards(
+                            card_uid, serial_number, stars, set_id, series, character, condition,
+                            dropped_at, dropped_in_server, dropped_by, grabbed_by, owned_by, grab_delay
+                        )
+                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """, (
+                        card["card_uid"],
+                        int(serial_number),
+                        int(card["stars"]),
+                        int(set_id),
+                        series,
+                        character,
+                        card["condition"],
+                        card["dropped_at"],
+                        card["dropped_in_server"],
+                        card["dropped_by"],
+                        None, None, None
+                    ))
+                    await db.commit()
+                return
+            except aiosqlite.IntegrityError as e:
+                if "uq_cards_series_character_set_serial" in str(e).lower():
+                    card["serial_number"] = None
+                    if attempts >= 20:
+                        raise
+                    continue
+                else:
+                    raise
 
     async def claim_card(self, card_uid: str, claimer_id: int, delay: float) -> bool:
         async with aiosqlite.connect(self.path) as db:

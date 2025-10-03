@@ -24,10 +24,9 @@ class DropsCog(commands.Cog):
         cards = []
         for _ in range(3):
             payload = await make_single_card_payload(self.bot.db, invoker_id, guild_id)
-            serial = await self.bot.db.next_serial()
-            payload["serial_number"] = serial
             await self.bot.db.insert_dropped_card(payload)
-            cards.append(payload)
+            saved = await self.bot.db.get_card(payload["card_uid"])
+            cards.append(saved or payload)
         return cards
 
     async def add_number_reactions(self, message: discord.Message):
