@@ -576,8 +576,8 @@ class DB:
         async with aiosqlite.connect(self.path) as db:
             cur = await db.execute(f"""
                 SELECT COUNT(*) AS total_current,
-                       SUM(CASE WHEN grabbed_by IS NOT NULL THEN 1 ELSE 0 END) AS current_claimed,
-                       AVG(CASE WHEN grab_delay IS NOT NULL THEN grab_delay END) AS current_avg_delay
+                    SUM(CASE WHEN grabbed_by IS NOT NULL THEN 1 ELSE 0 END) AS current_claimed,
+                    AVG(CASE WHEN grab_delay IS NOT NULL THEN grab_delay END) AS current_avg_delay
                 FROM cards
                 WHERE series=? AND character=? {set_clause}
             """, params)
@@ -588,8 +588,8 @@ class DB:
 
             cur = await db.execute(f"""
                 SELECT COUNT(*) AS burned_total,
-                       SUM(CASE WHEN grabbed_by IS NOT NULL THEN 1 ELSE 0 END) AS burned_claimed,
-                       AVG(CASE WHEN grab_delay IS NOT NULL THEN grab_delay END) AS burned_avg_delay
+                    SUM(CASE WHEN grabbed_by IS NOT NULL THEN 1 ELSE 0 END) AS burned_claimed,
+                    AVG(CASE WHEN grab_delay IS NOT NULL THEN grab_delay END) AS burned_avg_delay
                 FROM burns
                 WHERE series=? AND character=? {set_clause}
             """, params)
@@ -607,14 +607,6 @@ class DB:
             star_rows = await cur.fetchall()
             circ_by_stars = {int(s): int(c) for (s, c) in (star_rows or [])}
 
-            cur = await db.execute("""
-                SELECT DISTINCT set_id FROM cards WHERE series=? AND character=?
-                UNION
-                SELECT DISTINCT set_id FROM burns WHERE series=? AND character=?
-                ORDER BY set_id
-            """, [series, character, series, character])
-            editions = [int(r[0]) for r in await cur.fetchall()]
-
         total_generated = current_total + burned_total
         total_claimed = current_claimed + burned_claimed
         claim_rate = (total_claimed / total_generated * 100.0) if total_generated else 0.0
@@ -628,6 +620,9 @@ class DB:
             avg_delay = sum(a * w for a, w in weighted) / sum(w for _, w in weighted)
         else:
             avg_delay = None
+
+        n_editions, _weights = await self.get_editions_config()
+        editions = list(range(1, int(n_editions) + 1))
 
         return {
             "series": series,

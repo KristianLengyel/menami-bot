@@ -9,7 +9,9 @@ from .embeds import (
     build_burn_result_embed,
     build_upgrade_preview_embed,
     build_upgrade_outcome_embed,
+    build_character_lookup_embed,
 )
+
 from .config import UPGRADE_RULES, QUALITY_BY_STARS
 from .helpers import stars_to_str
 
@@ -262,6 +264,100 @@ class ConfirmBurnView(discord.ui.View):
         except Exception:
             pass
 
+
+class EditionLookupView(discord.ui.View):
+    def __init__(
+        self,
+        bot: commands.Bot,
+        series: str,
+        character: str,
+        editions: list[int],
+        start_index: int = 0,
+        requester_id: int | None = None,
+        wrap: bool = False,
+    ):
+        super().__init__(timeout=120)
+        self.bot = bot
+        self.series = series
+        self.character = character
+        self.editions = list(editions or [])
+        self.index = max(0, min(start_index, max(len(self.editions) - 1, 0)))
+        self.requester_id = requester_id
+        self.wrap = wrap
+        self.message: discord.Message | None = None
+        if len(self.editions) <= 1:
+            self.clear_items()
+
+    async def _fetch_stats(self, set_id: int | None):
+        return await self.bot.db.character_stats(self.series, self.character, set_id=set_id)
+
+    async def build_embed(self) -> discord.Embed:
+        if self.editions:
+            set_id = self.editions[self.index]
+            stats = await self._fetch_stats(set_id)
+            pos = self.index + 1
+        else:
+            stats = await self._fetch_stats(None)
+            pos = 1
+        return build_character_lookup_embed(stats, pos)
+
+    def _update_buttons(self):
+        if not self.editions or self.wrap:
+            return
+        disable_prev = self.index <= 0
+        disable_next = self.index >= len(self.editions) - 1
+        for child in self.children:
+            if isinstance(child, discord.ui.Button):
+                if child.custom_id == "ed_prev":
+                    child.disabled = disable_prev
+                elif child.custom_id == "ed_next":
+                    child.disabled = disable_next
+
+    async def _guard(self, interaction: discord.Interaction) -> bool:
+        if self.requester_id and interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Only the requester can use these buttons.", ephemeral=True)
+            return False
+        return True
+
+    async def refresh(self, interaction: discord.Interaction):
+        self._update_buttons()
+        embed = await self.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(emoji="◀️", style=discord.ButtonStyle.secondary, custom_id="ed_prev")
+    async def prev(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._guard(interaction):
+            return
+        if not self.editions:
+            return
+        if self.index > 0:
+            self.index -= 1
+        elif self.wrap:
+            self.index = len(self.editions) - 1
+        await self.refresh(interaction)
+
+    @discord.ui.button(emoji="▶️", style=discord.ButtonStyle.secondary, custom_id="ed_next")
+    async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._guard(interaction):
+            return
+        if not self.editions:
+            return
+        if self.index < len(self.editions) - 1:
+            self.index += 1
+        elif self.wrap:
+            self.index = 0
+        await self.refresh(interaction)
+
+    async def on_timeout(self):
+        for c in self.children:
+            if isinstance(c, discord.ui.Button):
+                c.disabled = True
+        try:
+            embed = await self.build_embed()
+            if self.message:
+                await self.message.edit(embed=embed, view=self)
+        except Exception:
+            pass
 
 # ===================== UPGRADE =====================
 

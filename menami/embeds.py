@@ -88,7 +88,11 @@ def build_character_lookup_embed(stats: dict, edition_index: int) -> discord.Emb
         f"Circulation (☆☆☆☆) · {stats['circ_by_stars'][0]:,}\n"
     )
     total_editions = max(len(stats["editions"]), 1)
-    e.set_footer(text=f"Showing edition {edition_index} of {total_editions}")
+    set_id = stats.get("set_id")
+    if set_id is None:
+        e.set_footer(text=f"All editions • {edition_index}/{total_editions}")
+    else:
+        e.set_footer(text=f"Edition ◈{set_id} • {edition_index}/{total_editions}")
     return e
 
 # ========= Burn embeds =========

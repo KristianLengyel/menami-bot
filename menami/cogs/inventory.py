@@ -18,6 +18,7 @@ from ..views import (
     ConfirmBurnView,
     balances_to_items,
     UpgradeView,
+    EditionLookupView,
 )
 
 def parse_collection_filters(text: str) -> dict:
@@ -262,11 +263,27 @@ class InventoryCog(commands.Cog):
                 return await ctx.send("You don't own any cards yet.")
             series = latest["series"]
             character = latest["character"]
-            set_id = latest["set_id"]
-            stats = await self.bot.db.character_stats(series, character, set_id=set_id)
-            edition_index = 1
-            embed = build_character_lookup_embed(stats, edition_index)
-            return await ctx.send(embed=embed)
+            current_set = int(latest["set_id"])
+
+            stats_all = await self.bot.db.character_stats(series, character, set_id=None)
+            editions = stats_all["editions"]
+            if editions:
+                try:
+                    start_index = editions.index(current_set)
+                except ValueError:
+                    start_index = 0
+                view = EditionLookupView(
+                    self.bot, series, character, editions,
+                    start_index=start_index, requester_id=ctx.author.id
+                )
+                embed = await view.build_embed()
+                sent = await ctx.send(embed=embed, view=view)
+                view.message = sent
+            else:
+                stats = stats_all
+                embed = build_character_lookup_embed(stats, edition_index=1)
+                await ctx.send(embed=embed)
+            return
 
         parts = [p.strip() for p in query.split("|")]
         if len(parts) != 2:
@@ -276,15 +293,14 @@ class InventoryCog(commands.Cog):
         stats_all = await self.bot.db.character_stats(series, character, set_id=None)
         editions = stats_all["editions"]
         if editions:
-            set_id = editions[0]
-            stats = await self.bot.db.character_stats(series, character, set_id=set_id)
-            edition_index = 1
+            view = EditionLookupView(self.bot, series, character, editions, start_index=0)
+            embed = await view.build_embed()
+            sent = await ctx.send(embed=embed, view=view)
+            view.message = sent
         else:
             stats = stats_all
-            edition_index = 1
-
-        embed = build_character_lookup_embed(stats, edition_index=edition_index)
-        await ctx.send(embed=embed)
+            embed = build_character_lookup_embed(stats, edition_index=1)
+            await ctx.send(embed=embed)
 
     @commands.command(name="tags")
     async def cmd_tags(self, ctx: commands.Context):
