@@ -292,14 +292,18 @@ class EditionLookupView(discord.ui.View):
         return await self.bot.db.character_stats(self.series, self.character, set_id=set_id)
 
     async def build_embed(self) -> discord.Embed:
-        if self.editions:
-            set_id = self.editions[self.index]
-            stats = await self._fetch_stats(set_id)
-            pos = self.index + 1
-        else:
-            stats = await self._fetch_stats(None)
-            pos = 1
-        return build_character_lookup_embed(stats, pos)
+        set_id = self.editions[self.index]
+        stats = await self._fetch_stats(set_id)
+        embed = build_character_lookup_embed(stats, self.index + 1)
+
+        img_url = await self.bot.db.get_character_image(self.series, self.character, set_id)
+        if not img_url:
+            img_url = await self.bot.db.get_character_image_any(self.series, self.character)
+
+        if img_url:
+            embed.set_thumbnail(url=img_url)
+
+        return embed
 
     def _update_buttons(self):
         if not self.editions or self.wrap:

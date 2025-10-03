@@ -2,6 +2,7 @@ from __future__ import annotations
 import json
 import aiosqlite
 import random
+from datetime import datetime, timezone
 from .config import DB_PATH, QUALITY_BY_STARS, BURN_REWARD_BY_STARS
 
 class DB:
@@ -68,6 +69,17 @@ class DB:
                 PRIMARY KEY(card_uid),
                 FOREIGN KEY(card_uid) REFERENCES cards(card_uid),
                 FOREIGN KEY(tag_id) REFERENCES tags(id)
+            );
+                                   
+            CREATE TABLE IF NOT EXISTS character_images(
+                series    TEXT NOT NULL,
+                character TEXT NOT NULL,
+                set_id    INTEGER NOT NULL,
+                image_url TEXT NOT NULL,
+                bytes     INTEGER,
+                mime      TEXT,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(series, character, set_id)
             );
 
             CREATE TABLE IF NOT EXISTS meta(
@@ -377,6 +389,40 @@ class DB:
             return row[0] if row else "◾"
 
     # ---- cards ----
+    async def set_character_image(self, series: str, character: str, set_id: int,
+                              image_url: str, bytes_: int | None = None, mime: str | None = None):
+        ts = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("""
+                INSERT INTO character_images(series, character, set_id, image_url, bytes, mime, updated_at)
+                VALUES(?,?,?,?,?,?,?)
+                ON CONFLICT(series, character, set_id)
+                DO UPDATE SET image_url=excluded.image_url,
+                            bytes=excluded.bytes,
+                            mime=excluded.mime,
+                            updated_at=excluded.updated_at
+            """, (series, character, int(set_id), image_url, bytes_, mime, ts))
+            await db.commit()
+
+    async def get_character_image(self, series: str, character: str, set_id: int) -> str | None:
+        async with aiosqlite.connect(self.path) as db:
+            cur = await db.execute("""
+                SELECT image_url FROM character_images
+                WHERE series=? AND character=? AND set_id=?
+            """, (series, character, int(set_id)))
+            row = await cur.fetchone()
+            return row[0] if row else None
+
+    async def get_character_image_any(self, series: str, character: str) -> str | None:
+        async with aiosqlite.connect(self.path) as db:
+            cur = await db.execute("""
+                SELECT image_url FROM character_images
+                WHERE series=? AND character=?
+                ORDER BY set_id ASC LIMIT 1
+            """, (series, character))
+            row = await cur.fetchone()
+            return row[0] if row else None
+    
     async def inventory_filtered(self, user_id: int, flt: dict):
         where = ["c.owned_by=?"]
         params = [str(user_id)]

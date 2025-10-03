@@ -111,6 +111,33 @@ class InventoryCog(commands.Cog):
         view = CollectionView(self.bot, target, rows)
         await ctx.send(embed=view.build_embed(), view=view)
 
+    @commands.command(name="imgset", aliases=["mimgset"])
+    @commands.has_permissions(manage_guild=True)
+    async def cmd_imgset(self, ctx, edition: int, *, query: str):
+        parts = [p.strip() for p in query.split("|")]
+        if len(parts) != 2:
+            return await ctx.send("Format: `mimgset <edition> Series | Character`")
+
+        series, character = parts
+        url = None
+        size = None
+        mime = None
+
+        if ctx.message.attachments:
+            a = ctx.message.attachments[0]
+            url = a.url
+            size = a.size
+            mime = a.content_type
+
+        if not url:
+            return await ctx.send("Please attach an image (520x700px, ~100–140KB).")
+
+        if size and size > 200_000:
+            return await ctx.send("⚠️ Keep images ≤ 200KB.")
+
+        await self.bot.db.set_character_image(series, character, int(edition), url, size, mime)
+        await ctx.send(f"✅ Image set for {character} · {series} · ◈{edition}")
+
     # -------- Inventory --------
     @app_commands.command(name="inventory", description="Show your items (coin, gem, ticket) with pagination.")
     @app_commands.describe(user="User to view, defaults to you")
