@@ -9,7 +9,6 @@ from ..card_render import render_drop_triptych
 
 from ..config import DROP_COOLDOWN_S, CLAIM_WINDOW_S, EMOJIS
 from ..helpers import make_single_card_payload
-from ..embeds import build_triple_drop_embed, format_card_embed
 
 class DropsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -97,6 +96,11 @@ class DropsCog(commands.Cog):
         }
         self.bot.channel_cooldowns[ch_id] = now
 
+        try:
+            await self.bot.db.set_timer(interaction.user.id, "drop")
+        except Exception:
+            pass
+
         asyncio.create_task(self.add_number_reactions(msg))
         asyncio.create_task(self.expire_message_if_unclaimed(msg.id))
 
@@ -133,6 +137,11 @@ class DropsCog(commands.Cog):
             "claimed": False,
         }
         self.bot.channel_cooldowns[ch_id] = now
+
+        try:
+            await self.bot.db.set_timer(ctx.author.id, "drop")
+        except Exception:
+            pass
 
         asyncio.create_task(self.add_number_reactions(sent))
         asyncio.create_task(self.expire_message_if_unclaimed(sent.id))
@@ -189,6 +198,12 @@ class DropsCog(commands.Cog):
             char_name = card.get("character") or "Unknown"
             ann = f"{who} took the **{char_name}** card `{card_uid}`! Unfortunately, it was **{condition}**."
             await channel.send(ann)
+
+            try:
+                await self.bot.db.set_timer(payload.user_id, "grab")
+            except Exception:
+                pass
+
         except Exception:
             pass
         finally:

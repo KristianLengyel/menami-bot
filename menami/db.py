@@ -5,6 +5,15 @@ import random
 from datetime import datetime, timezone
 from .config import DB_PATH, QUALITY_BY_STARS, BURN_REWARD_BY_STARS
 
+def _utcnow_iso() -> str:
+    return datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
+
+def _parse_iso(ts: str) -> datetime:
+    dt = datetime.fromisoformat(ts)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
 class DB:
     def __init__(self, path: str = DB_PATH):
         self.path = path
@@ -105,7 +114,14 @@ class DB:
               drop_channel_id TEXT,
               drop_cooldown_s INTEGER
             );
-
+                                   
+            CREATE TABLE IF NOT EXISTS user_timers(
+                user_id TEXT NOT NULL,
+                key     TEXT NOT NULL,
+                ts      TEXT NOT NULL,
+                PRIMARY KEY(user_id, key)
+            );
+                                   
             CREATE INDEX IF NOT EXISTS idx_cards_owned_by ON cards(owned_by);
             CREATE INDEX IF NOT EXISTS idx_cards_series_character ON cards(series, character);
             CREATE INDEX IF NOT EXISTS idx_cards_series_character_set ON cards(series, character, set_id);
@@ -179,6 +195,41 @@ class DB:
         async with aiosqlite.connect(self.path) as db:
             await db.execute("INSERT INTO guild_settings(guild_id) VALUES(?) ON CONFLICT(guild_id) DO NOTHING", (str(guild_id),))
             await db.execute("UPDATE guild_settings SET drop_cooldown_s=? WHERE guild_id=?", (seconds, str(guild_id)))
+            await db.commit()
+
+    # ---------- timers ----------
+    async def set_timer(self, user_id: int, key: str):
+        ts = _utcnow_iso()
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("""
+                INSERT INTO user_timers(user_id, key, ts) VALUES(?, ?, ?)
+                ON CONFLICT(user_id, key) DO UPDATE SET ts=excluded.ts
+            """, (str(user_id), key, ts))
+            await db.commit()
+
+    async def get_timer(self, user_id: int, key: str) -> str | None:
+        async with aiosqlite.connect(self.path) as db:
+            cur = await db.execute("SELECT ts FROM user_timers WHERE user_id=? AND key=?", (str(user_id), key))
+            row = await cur.fetchone()
+            return row[0] if row else None
+
+    async def seconds_remaining(self, user_id: int, key: str, cooldown_s: int) -> int:
+        ts = await self.get_timer(user_id, key)
+        if not ts:
+            return 0
+        last = _parse_iso(ts)
+        now  = datetime.utcnow().replace(tzinfo=timezone.utc)
+        elapsed = (now - last).total_seconds()
+        remain = int(max(0, cooldown_s - elapsed))
+        return remain
+
+    # ---------- currency helpers ----------
+    async def add_currency(self, user_id: int, *, coins: int = 0, gems: int = 0):
+        await self.ensure_user(user_id)
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("""
+                UPDATE users SET coins = coins + ?, gems = gems + ? WHERE user_id=?
+            """, (int(coins), int(gems), user_id))
             await db.commit()
 
     # ---- content helpers ----

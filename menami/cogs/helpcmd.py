@@ -68,7 +68,18 @@ def build_help_embed() -> discord.Embed:
         name="💰 Economy",
         value=(
             "`mb` — Burn latest/UID (coins + 1 dust by ★)\n"
-            "`mi` — Show inventory"
+            "`mi` — Show inventory\n"
+            "`mdaily` — Claim your daily (coins + gems)"
+        ),
+        inline=False,
+    )
+
+    # Cooldowns (NEW)
+    e.add_field(
+        name="⏱️ Cooldowns",
+        value=(
+            "`mcd` — Your cooldowns (drop / grab / daily)\n"
+            "`mscd` — Server drop cooldown (admins)"
         ),
         inline=False,
     )
@@ -135,7 +146,7 @@ def build_help_embed() -> discord.Embed:
     e.add_field(
         name="⚡ Quick Ref",
         value=(
-            "`md mc mi mv ci mlu mb mup tags tc td t ut`"
+            "`md mc mi mv ci mlu mb mdaily mcd mscd mup tags tc td t ut`"
         ),
         inline=False,
     )
