@@ -11,7 +11,7 @@ if not TOKEN:
 
 class MenamiBot(commands.Bot):
     def __init__(self):
-        super().__init__(command_prefix=commands.when_mentioned_or("m", "!"), intents=INTENTS)
+        super().__init__(command_prefix=commands.when_mentioned_or("m", "M", "!"), intents=INTENTS, case_insensitive=True)
         self.db = DB()
         self.channel_cooldowns: dict[int, float] = {}
         self.active_drops: dict[int, dict] = {}

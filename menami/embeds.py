@@ -74,7 +74,7 @@ def build_character_lookup_embed(stats: dict, edition_index: int) -> discord.Emb
     e.description = (
         f"Character · {stats['character']}\n"
         f"Series · {stats['series']}\n"
-        f"Wishlisted · 0\n\n"
+        f"Wishlisted · {stats['wishlisted']:,}\n\n"
         f"Total generated · {stats['total_generated']:,}\n"
         f"Total claimed · {stats['total_claimed']:,}\n"
         f"Total burned · {stats['total_burned']:,}\n"

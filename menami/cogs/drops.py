@@ -37,24 +37,6 @@ class DropsCog(commands.Cog):
             except Exception:
                 pass
 
-    async def _wishlist_mentions_for_cards(self, guild: discord.Guild, cards: list[dict]) -> list[str]:
-        if not guild:
-            return []
-        user_ids: set[int] = set()
-        for c in cards:
-            series = c.get("series")
-            character = c.get("character")
-            if not series or not character:
-                continue
-            try:
-                wishers = await self.bot.db.get_wishers_for(series, character)
-                for uid in wishers:
-                    if guild.get_member(uid) is not None:
-                        user_ids.add(uid)
-            except Exception:
-                continue
-        return [f"<@{uid}>" for uid in sorted(user_ids)]
-
     async def expire_message_if_unclaimed(self, message_id: int):
         await asyncio.sleep(CLAIM_WINDOW_S)
         drop = self.bot.active_drops.get(message_id)
@@ -70,11 +52,38 @@ class DropsCog(commands.Cog):
             newline = "\n" if original and not original.endswith("\n") else ""
             expired_text = "*This drop has expired and the cards can no longer be grabbed.*"
             await msg.edit(content=f"{original}{newline}{expired_text}")
-
         except Exception:
             pass
         finally:
             self.bot.active_drops.pop(message_id, None)
+
+    async def _wishlist_mentions_for_cards(self, guild: discord.Guild, cards: list[dict]) -> list[str]:
+        user_ids: set[int] = set()
+        for c in cards:
+            series = c.get("series")
+            character = c.get("character")
+            if not series or not character:
+                continue
+            try:
+                wishers = await self.bot.db.get_wishers_for(series, character)
+                user_ids.update(wishers)
+            except Exception:
+                continue
+
+        if not guild:
+            return [f"<@{uid}>" for uid in sorted(user_ids)]
+
+        mentions: list[str] = []
+        for uid in sorted(user_ids):
+            try:
+                member = guild.get_member(uid) or await guild.fetch_member(uid)
+                if member:
+                    mentions.append(member.mention)
+                    continue
+            except Exception:
+                pass
+            mentions.append(f"<@{uid}>")
+        return mentions
 
     @app_commands.command(name="drop", description="Drop 3 cards in this channel.")
     async def slash_drop(self, interaction: discord.Interaction):

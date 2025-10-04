@@ -2,6 +2,7 @@ import discord
 
 INTENTS = discord.Intents.default()
 INTENTS.message_content = True
+INTENTS.members = True
 
 DB_PATH = "menami.db"
 

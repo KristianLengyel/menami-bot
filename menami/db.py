@@ -769,6 +769,10 @@ class DB:
             return reward
 
     async def character_stats(self, series: str, character: str, set_id: int | None = None) -> dict:
+        canon = await self.find_canonical_series_character(series, character)
+        if canon:
+            series, character = canon
+
         params = [series, character]
         set_clause = ""
         if set_id is not None:
@@ -812,13 +816,15 @@ class DB:
             cur = await db.execute("""
                 SELECT COUNT(*)
                 FROM wishlists w
-                WHERE LOWER(TRIM(w.series))      = LOWER(TRIM(?))
-                AND LOWER(TRIM(w."character")) = LOWER(TRIM(?))
+                WHERE LOWER(REPLACE(REPLACE(REPLACE(TRIM(w.series), CHAR(160), ''), CHAR(8203), ''), ' ', ''))
+                    = LOWER(REPLACE(REPLACE(REPLACE(TRIM(?),        CHAR(160), ''), CHAR(8203), ''), ' ', ''))
+                AND LOWER(REPLACE(REPLACE(REPLACE(TRIM(w."character"), CHAR(160), ''), CHAR(8203), ''), ' ', ''))
+                    = LOWER(REPLACE(REPLACE(REPLACE(TRIM(?),             CHAR(160), ''), CHAR(8203), ''), ' ', ''))
             """, (series, character))
             wishlisted = int((await cur.fetchone() or (0,))[0] or 0)
 
         total_generated = current_total + burned_total
-        total_claimed = current_claimed + burned_claimed
+        total_claimed   = current_claimed + burned_claimed
         claim_rate = (total_claimed / total_generated * 100.0) if total_generated else 0.0
 
         weighted = []
