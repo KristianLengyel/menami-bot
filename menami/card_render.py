@@ -10,7 +10,6 @@ CUT_W, CUT_H = 211, 314
 PAD = 10
 IMG_BOX = (PAD, 70, CARD_W - PAD, CARD_H - 85)
 
-# Image cutouts per frame (kept same for now)
 FRAME_CUTOUTS: dict[int, tuple[int, int, int, int]] = {
     1: ((CARD_W - CUT_W) // 2, (CARD_H - CUT_H) // 2, CUT_W, CUT_H),
     2: ((CARD_W - CUT_W) // 2, (CARD_H - CUT_H) // 2, CUT_W, CUT_H),
@@ -52,7 +51,6 @@ TEXT_BOXES: dict[int, dict[str, tuple[int, int, int, int]]] = {
     },
 }
 
-# Colors and fonts
 BG_COLOR     = (18, 24, 38)
 PANEL_COLOR  = (245, 238, 220)
 PANEL_TEXT   = (30, 22, 18)
@@ -67,7 +65,7 @@ def _text_boxes_for_set(set_id: int) -> tuple[
     tuple[int,int,int,int],  # uid
     tuple[int,int,int,int],  # name
     tuple[int,int,int,int],  # series
-    tuple[int,int,int,int],  # bottom-right (serial+edition)
+    tuple[int,int,int,int],  # serial+edition
 ]:
     spec = TEXT_BOXES.get(int(set_id))
     if not spec:
@@ -109,8 +107,6 @@ def _fit_cover(im: Image.Image, box: Tuple[int,int,int,int]) -> Image.Image:
     left = (iw2 - bw) // 2; top = (ih2 - bh) // 2
     return imr.crop((left, top, left + bw, top + bh))
 
-# ---------- text helpers (auto-fit + centered) ----------
-
 def _font_try(path: str, size: int) -> ImageFont.FreeTypeFont:
     try:
         return ImageFont.truetype(path, size)
@@ -119,7 +115,6 @@ def _font_try(path: str, size: int) -> ImageFont.FreeTypeFont:
 
 def _fit_text_size(draw: ImageDraw.ImageDraw, text: str, font_path: str, max_w: int, max_h: int,
                    size_max: int, size_min: int) -> ImageFont.FreeTypeFont:
-    """Return a font whose size fits within max_w and max_h (best effort)."""
     size = size_max
     while size >= size_min:
         f = _font_try(font_path, size)
@@ -141,7 +136,7 @@ def _draw_centered_fit(draw: ImageDraw.ImageDraw, text: str, rect: tuple[int,int
     x = l + (max_w - tw) / 2
     y = t + (max_h - th) / 2
     draw.text((x, y), text, font=font, fill=fill)
-    return font  # sometimes we need returned font (e.g., to align other parts)
+    return font
 
 def _round_rect(dst, rect, fill, radius=8, outline=None, outline_width=1):
     x0,y0,x1,y1 = rect
@@ -150,8 +145,6 @@ def _round_rect(dst, rect, fill, radius=8, outline=None, outline_width=1):
     d.rounded_rectangle((0,0,rr.width-1, rr.height-1), radius=radius,
                         fill=fill, outline=outline, width=outline_width)
     dst.alpha_composite(rr, (x0,y0))
-
-# ---------- main render ----------
 
 async def render_card_image(
     series: str,
@@ -164,7 +157,6 @@ async def render_card_image(
 ) -> bytes:
     card = Image.new("RGBA", (CARD_W, CARD_H), (0, 0, 0, 0))
 
-    # Artwork
     art = None
     if image_url:
         try:
@@ -186,7 +178,6 @@ async def render_card_image(
     art = art.crop((cx, cy, cx + w, cy + h))
     card.alpha_composite(art, (x, y))
 
-    # Frame overlay
     frame = _load_frame_for_set(set_id)
     if frame is not None:
         card.alpha_composite(frame)
@@ -199,17 +190,10 @@ async def render_card_image(
 
     uid_box, name_box, series_box, br_box = _text_boxes_for_set(set_id)
 
-    # Character (big, auto-fit in name box)
     _draw_centered_fit(draw, str(character), name_box, FONT_PATH_BOLD, size_max=22, size_min=12, fill=BLACK)
-
-    # Series (medium, auto-fit in series box)
     _draw_centered_fit(draw, str(series), series_box, FONT_PATH_REG, size_max=18, size_min=10, fill=BLACK)
-
-    # UID (small, uppercase)
     _draw_centered_fit(draw, str(card_uid).upper(), uid_box, FONT_PATH_REG, size_max=12, size_min=8, fill=YELLOW)
 
-    # Bottom-right (serial + edition), centered as one string,
-    # but with smaller edition font; if it doesn't fit, both shrink.
     l, t, r, b = br_box
     max_w = max(1, (r - l) - 2)
     max_h = max(1, (b - t) - 2)
@@ -217,7 +201,6 @@ async def render_card_image(
     serial_text = f"#{int(serial_number)} • "
     set_text    = str(int(set_id)).upper()
 
-    # Start from intended sizes and shrink together until the combined width fits
     size_serial = 12
     size_set    = 12
     min_serial  = 8
@@ -239,7 +222,6 @@ async def render_card_image(
         if size_serial == min_serial and size_set == min_set:
             break
 
-    # Center the combined pair in the br box
     f_serial = _font_try(FONT_PATH_REG, size_serial)
     f_set    = _font_try(FONT_PATH_REG, size_set)
     w_serial = draw.textlength(serial_text, font=f_serial)
@@ -252,7 +234,6 @@ async def render_card_image(
     x_start = l + (max_w - total_w) / 2
     y_start = t + (max_h - total_h) / 2
 
-    # Draw serial (yellow) then set id (white)
     draw.text((x_start, y_start), serial_text, font=f_serial, fill=YELLOW)
     draw.text((x_start + w_serial, y_start), set_text, font=f_set, fill=WHITE)
 
@@ -260,7 +241,6 @@ async def render_card_image(
     card.save(buf, format=fmt)
     return buf.getvalue()
 
-# --- triptych for drops ---
 async def render_drop_triptych(db, cards: list[dict]) -> bytes:
     target_w, target_h = 836, 419
     padding = 20
