@@ -23,6 +23,7 @@ class MenamiBot(commands.Bot):
         await self.load_extension("menami.cogs.helpcmd")
         await self.load_extension("menami.cogs.settings")
         await self.load_extension("menami.cogs.cooldowns")
+        await self.load_extension("menami.cogs.wishlist")
         await self.tree.sync()
 
 bot = MenamiBot()

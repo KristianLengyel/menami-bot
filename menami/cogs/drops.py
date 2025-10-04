@@ -37,6 +37,24 @@ class DropsCog(commands.Cog):
             except Exception:
                 pass
 
+    async def _wishlist_mentions_for_cards(self, guild: discord.Guild, cards: list[dict]) -> list[str]:
+        if not guild:
+            return []
+        user_ids: set[int] = set()
+        for c in cards:
+            series = c.get("series")
+            character = c.get("character")
+            if not series or not character:
+                continue
+            try:
+                wishers = await self.bot.db.get_wishers_for(series, character)
+                for uid in wishers:
+                    if guild.get_member(uid) is not None:
+                        user_ids.add(uid)
+            except Exception:
+                continue
+        return [f"<@{uid}>" for uid in sorted(user_ids)]
+
     async def expire_message_if_unclaimed(self, message_id: int):
         await asyncio.sleep(CLAIM_WINDOW_S)
         drop = self.bot.active_drops.get(message_id)
@@ -81,7 +99,10 @@ class DropsCog(commands.Cog):
         img_bytes = await render_drop_triptych(self.bot.db, cards)
         file = discord.File(io.BytesIO(img_bytes), filename="drop.webp")
 
-        content = f"{interaction.user.mention} is dropping 3 cards!"
+        mentions = await self._wishlist_mentions_for_cards(interaction.guild, cards)
+        lead = f"A card from your wishlist is dropping! {' '.join(mentions)}\n" if mentions else ""
+
+        content = f"{lead}{interaction.user.mention} is dropping 3 cards!"
         await interaction.response.send_message(content=content, file=file)
         msg = await interaction.original_response()
 
@@ -124,7 +145,10 @@ class DropsCog(commands.Cog):
         img_bytes = await render_drop_triptych(self.bot.db, cards)
         file = discord.File(io.BytesIO(img_bytes), filename="drop.webp")
 
-        content = f"{ctx.author.mention} is dropping 3 cards!"
+        mentions = await self._wishlist_mentions_for_cards(ctx.guild, cards)
+        lead = f"A card from your wishlist is dropping! {' '.join(mentions)}\n" if mentions else "" 
+
+        content = f"{lead}{ctx.author.mention} is dropping 3 cards!"
         sent = await ctx.send(content=content, file=file)
 
         start_ts = time.time()

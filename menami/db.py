@@ -122,12 +122,21 @@ class DB:
                 PRIMARY KEY(user_id, key)
             );
                                    
+            CREATE TABLE IF NOT EXISTS wishlists(
+                user_id  TEXT NOT NULL,
+                series   TEXT NOT NULL,
+                character TEXT NOT NULL,
+                PRIMARY KEY(user_id, series, character)
+            );
+                                   
             CREATE INDEX IF NOT EXISTS idx_cards_owned_by ON cards(owned_by);
             CREATE INDEX IF NOT EXISTS idx_cards_series_character ON cards(series, character);
             CREATE INDEX IF NOT EXISTS idx_cards_series_character_set ON cards(series, character, set_id);
             CREATE INDEX IF NOT EXISTS idx_burns_series_character ON burns(series, character);
             CREATE INDEX IF NOT EXISTS idx_burns_series_character_set ON burns(series, character, set_id);
             CREATE INDEX IF NOT EXISTS idx_cards_owned_by_dropped_at ON cards(owned_by, dropped_at);
+            CREATE INDEX IF NOT EXISTS idx_wish_series_char ON wishlists(series, character);
+            CREATE INDEX IF NOT EXISTS idx_wish_user ON wishlists(user_id);
 
             CREATE UNIQUE INDEX IF NOT EXISTS uq_cards_series_character_set_serial
             ON cards(series, character, set_id, serial_number);
@@ -196,6 +205,96 @@ class DB:
             await db.execute("INSERT INTO guild_settings(guild_id) VALUES(?) ON CONFLICT(guild_id) DO NOTHING", (str(guild_id),))
             await db.execute("UPDATE guild_settings SET drop_cooldown_s=? WHERE guild_id=?", (seconds, str(guild_id)))
             await db.commit()
+
+    # ---------- wishlist ----------
+    async def wishlist_count(self, user_id: int) -> int:
+        async with aiosqlite.connect(self.path) as db:
+            cur = await db.execute("SELECT COUNT(*) FROM wishlists WHERE user_id=?", (str(user_id),))
+            row = await cur.fetchone()
+            return int(row[0] or 0)
+
+    async def list_wishlist(self, user_id: int) -> list[tuple[str, str]]:
+        async with aiosqlite.connect(self.path) as db:
+            cur = await db.execute("""
+                SELECT series, character
+                FROM wishlists
+                WHERE user_id=?
+                ORDER BY LOWER(series) ASC, LOWER(character) ASC
+            """, (str(user_id),))
+            rows = await cur.fetchall()
+            return [(r[0], r[1]) for r in rows]
+
+    async def add_wish(self, user_id: int, series: str, character: str) -> bool:
+        series = (series or "").strip()
+        character = (character or "").strip()
+
+        canon = await self.find_canonical_series_character(series, character)
+        if canon:
+            series, character = canon
+
+        async with aiosqlite.connect(self.path) as db:
+            try:
+                await db.execute("""
+                    INSERT INTO wishlists(user_id, series, character)
+                    VALUES(?,?,?)
+                    ON CONFLICT(user_id, series, character) DO NOTHING
+                """, (str(user_id), series, character))
+                await db.commit()
+
+                cur = await db.execute("""
+                    SELECT 1 FROM wishlists
+                    WHERE user_id=? AND series=? AND character=?
+                    LIMIT 1
+                """, (str(user_id), series, character))
+                return await cur.fetchone() is not None
+            except Exception:
+                return False
+
+    async def remove_wish(self, user_id: int, series: str | None, character: str) -> int:
+        async with aiosqlite.connect(self.path) as db:
+            if series:
+                cur = await db.execute("""
+                    DELETE FROM wishlists WHERE user_id=? AND LOWER(series)=LOWER(?) AND LOWER(character)=LOWER(?)
+                """, (str(user_id), series, character))
+            else:
+                cur = await db.execute("""
+                    DELETE FROM wishlists WHERE user_id=? AND LOWER(character)=LOWER(?)
+                """, (str(user_id), character))
+            await db.commit()
+            return cur.rowcount or 0
+
+    async def find_canonical_series_character(self, series: str, character: str) -> tuple[str, str] | None:
+        async with aiosqlite.connect(self.path) as db:
+            cur = await db.execute("""
+                SELECT s.name, c.name
+                FROM characters c
+                JOIN series s ON c.series_id = s.id
+                WHERE LOWER(s.name)=LOWER(?) AND LOWER(c.name)=LOWER(?)
+                LIMIT 1
+            """, (series, character))
+            row = await cur.fetchone()
+            return (row[0], row[1]) if row else None
+
+    async def find_by_character_only(self, character: str) -> list[tuple[str, str]]:
+        async with aiosqlite.connect(self.path) as db:
+            cur = await db.execute("""
+                SELECT s.name, c.name
+                FROM characters c
+                JOIN series s ON c.series_id = s.id
+                WHERE LOWER(c.name)=LOWER(?)
+                ORDER BY LOWER(s.name) ASC
+            """, (character,))
+            rows = await cur.fetchall()
+            return [(r[0], r[1]) for r in rows]
+
+    async def get_wishers_for(self, series: str, character: str) -> list[int]:
+        async with aiosqlite.connect(self.path) as db:
+            cur = await db.execute("""
+                SELECT user_id FROM wishlists
+                WHERE LOWER(series)=LOWER(?) AND LOWER(character)=LOWER(?)
+            """, (series, character))
+            rows = await cur.fetchall()
+            return [int(r[0]) for r in rows]
 
     # ---------- timers ----------
     async def set_timer(self, user_id: int, key: str):
@@ -439,6 +538,11 @@ class DB:
             )
             row = await cur.fetchone()
             return row[0] if row else "◾"
+
+    async def normalize_wishlist_rows(self):
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute('UPDATE wishlists SET series=TRIM(series), "character"=TRIM("character")')
+            await db.commit()
 
     # ---- cards ----
     async def set_character_image(self, series: str, character: str, set_id: int,
@@ -705,6 +809,14 @@ class DB:
             star_rows = await cur.fetchall()
             circ_by_stars = {int(s): int(c) for (s, c) in (star_rows or [])}
 
+            cur = await db.execute("""
+                SELECT COUNT(*)
+                FROM wishlists w
+                WHERE LOWER(TRIM(w.series))      = LOWER(TRIM(?))
+                AND LOWER(TRIM(w."character")) = LOWER(TRIM(?))
+            """, (series, character))
+            wishlisted = int((await cur.fetchone() or (0,))[0] or 0)
+
         total_generated = current_total + burned_total
         total_claimed = current_claimed + burned_claimed
         claim_rate = (total_claimed / total_generated * 100.0) if total_generated else 0.0
@@ -740,6 +852,7 @@ class DB:
                 1: circ_by_stars.get(1, 0),
                 0: circ_by_stars.get(0, 0),
             },
+            "wishlisted": wishlisted,
         }
 
     async def get_latest_card(self, user_id: int) -> dict | None:
