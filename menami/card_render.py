@@ -10,6 +10,7 @@ CUT_W, CUT_H = 211, 314
 PAD = 10
 IMG_BOX = (PAD, 70, CARD_W - PAD, CARD_H - 85)
 
+# Image cutouts per frame (kept same for now)
 FRAME_CUTOUTS: dict[int, tuple[int, int, int, int]] = {
     1: ((CARD_W - CUT_W) // 2, (CARD_H - CUT_H) // 2, CUT_W, CUT_H),
     2: ((CARD_W - CUT_W) // 2, (CARD_H - CUT_H) // 2, CUT_W, CUT_H),
@@ -19,28 +20,39 @@ FRAME_CUTOUTS: dict[int, tuple[int, int, int, int]] = {
 }
 
 TEXT_BOXES: dict[int, dict[str, tuple[int, int, int, int]]] = {
-    1: {  # 1.png
-        "uid": (55 - 15, 5 + 5, 189 - 15, 25 + 5),
-        "br":  (145 - 15, 370 - 15, 250 - 15, 390 - 15),
+    5: {
+        "uid":    (58, 28, 114, 38),
+        "name":   (65, 51, 208, 90),
+        "series": (44, 303, 229, 347),
+        "br":     (154, 360, 199, 370),
     },
-    2: {  # 2.png
-        "uid": (50 - 15, 5 + 5, 195 - 15, 27 + 5),
-        "br":  (145 - 15, 370 - 15, 250 - 15, 390 - 15),
+    4: {
+        "uid":    (62, 27, 117, 36),
+        "name":   (61, 47, 212, 90),
+        "series": (50, 301, 223, 352),
+        "br":     (159, 361, 215, 372),
     },
-    3: {  # 3.png
-        "uid": (45 - 15, 5 + 5, 200 - 15, 27 + 5),
-        "br":  (145 - 15, 370 - 15, 250 - 15, 390 - 15),
+    3: {
+        "uid":    (63, 29, 118, 40),
+        "name":   (65, 51, 208, 91),
+        "series": (53, 307, 220, 350),
+        "br":     (158, 360, 211, 372),
     },
-    4: {  # 4.png
-        "uid": (43 - 15, 5 + 5, 201 - 15, 27 + 5),
-        "br":  (145 - 15, 370 - 15, 250 - 15, 390 - 15),
+    2: {
+        "uid":    (64, 26, 117, 36),
+        "name":   (54, 52, 219, 90),
+        "series": (54, 308, 219, 347),
+        "br":     (157, 363, 211, 372),
     },
-    5: {  # 5.png
-        "uid": (49 - 15, 5 + 5, 195 - 15, 29 + 5),
-        "br":  (145 - 15, 370 - 15, 250 - 15, 390 - 15),
+    1: {
+        "uid":    (57, 28, 111, 40),
+        "name":   (59, 53, 214, 91),
+        "series": (59, 310, 214, 348),
+        "br":     (164, 359, 219, 371),
     },
 }
 
+# Colors and fonts
 BG_COLOR     = (18, 24, 38)
 PANEL_COLOR  = (245, 238, 220)
 PANEL_TEXT   = (30, 22, 18)
@@ -51,19 +63,25 @@ FONT_PATH_REG  = "assets/fonts/Alkia.ttf"
 
 FRAME_DIR = "assets/frames"
 
-def _text_boxes_for_set(set_id: int) -> tuple[tuple[int,int,int,int], tuple[int,int,int,int]]:
+def _text_boxes_for_set(set_id: int) -> tuple[
+    tuple[int,int,int,int],  # uid
+    tuple[int,int,int,int],  # name
+    tuple[int,int,int,int],  # series
+    tuple[int,int,int,int],  # bottom-right (serial+edition)
+]:
     spec = TEXT_BOXES.get(int(set_id))
     if not spec:
-        uid_box = (70, 0, 204, 22)
-        br_box  = (160, 385, 265, 405)
-        return uid_box, br_box
-    return spec["uid"], spec["br"]
+        uid_box    = (70, 0, 204, 22)
+        name_box   = (18, 40, CARD_W - 18, 90)
+        series_box = (18, CARD_H - 100, CARD_W - 18, CARD_H - 60)
+        br_box     = (160, 385, 265, 405)
+        return uid_box, name_box, series_box, br_box
+    return spec["uid"], spec["name"], spec["series"], spec["br"]
 
 def _cutout_for_set(set_id: int) -> tuple[int, int, int, int]:
     return FRAME_CUTOUTS.get(int(set_id), ((CARD_W - CUT_W) // 2, (CARD_H - CUT_H) // 2, CUT_W, CUT_H))
 
 def _load_frame_for_set(set_id: int) -> Image.Image | None:
-    import os
     path = os.path.join(FRAME_DIR, f"{int(set_id)}.png")
     if not os.path.exists(path):
         return None
@@ -91,13 +109,39 @@ def _fit_cover(im: Image.Image, box: Tuple[int,int,int,int]) -> Image.Image:
     left = (iw2 - bw) // 2; top = (ih2 - bh) // 2
     return imr.crop((left, top, left + bw, top + bh))
 
-def _shadow(rect, radius=8, spread=4):
-    x0,y0,x1,y1 = rect
-    w, h = x1-x0, y1-y0
-    mask = Image.new("L", (w, h), 0)
-    d = ImageDraw.Draw(mask)
-    d.rounded_rectangle((0,0,w-1,h-1), radius=radius, fill=255)
-    return mask.filter(ImageFilter.GaussianBlur(spread))
+# ---------- text helpers (auto-fit + centered) ----------
+
+def _font_try(path: str, size: int) -> ImageFont.FreeTypeFont:
+    try:
+        return ImageFont.truetype(path, size)
+    except Exception:
+        return ImageFont.load_default()
+
+def _fit_text_size(draw: ImageDraw.ImageDraw, text: str, font_path: str, max_w: int, max_h: int,
+                   size_max: int, size_min: int) -> ImageFont.FreeTypeFont:
+    """Return a font whose size fits within max_w and max_h (best effort)."""
+    size = size_max
+    while size >= size_min:
+        f = _font_try(font_path, size)
+        tw = draw.textlength(text, font=f)
+        th = f.getbbox(text)[3] - f.getbbox(text)[1]
+        if tw <= max_w and th <= max_h:
+            return f
+        size -= 1
+    return _font_try(font_path, size_min)
+
+def _draw_centered_fit(draw: ImageDraw.ImageDraw, text: str, rect: tuple[int,int,int,int],
+                       font_path: str, size_max: int, size_min: int, fill: tuple[int,int,int,int]):
+    l, t, r, b = rect
+    max_w = max(1, (r - l) - 2)
+    max_h = max(1, (b - t) - 2)
+    font = _fit_text_size(draw, text, font_path, max_w, max_h, size_max, size_min)
+    tw = draw.textlength(text, font=font)
+    th = font.getbbox(text)[3] - font.getbbox(text)[1]
+    x = l + (max_w - tw) / 2
+    y = t + (max_h - th) / 2
+    draw.text((x, y), text, font=font, fill=fill)
+    return font  # sometimes we need returned font (e.g., to align other parts)
 
 def _round_rect(dst, rect, fill, radius=8, outline=None, outline_width=1):
     x0,y0,x1,y1 = rect
@@ -107,18 +151,20 @@ def _round_rect(dst, rect, fill, radius=8, outline=None, outline_width=1):
                         fill=fill, outline=outline, width=outline_width)
     dst.alpha_composite(rr, (x0,y0))
 
-def _truncate(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont, max_w: int) -> str:
-    if draw.textlength(text, font=font) <= max_w:
-        return text
-    ell = "…"
-    while text and draw.textlength(text + ell, font=font) > max_w:
-        text = text[:-1]
-    return text + ell
+# ---------- main render ----------
 
-async def render_card_image(series: str, character: str, serial_number: int, set_id: int,
-                            card_uid: str, image_url: str | None, fmt="PNG") -> bytes:
+async def render_card_image(
+    series: str,
+    character: str,
+    serial_number: int,
+    set_id: int,
+    card_uid: str,
+    image_url: str | None,
+    fmt="PNG"
+) -> bytes:
     card = Image.new("RGBA", (CARD_W, CARD_H), (0, 0, 0, 0))
 
+    # Artwork
     art = None
     if image_url:
         try:
@@ -140,66 +186,84 @@ async def render_card_image(series: str, character: str, serial_number: int, set
     art = art.crop((cx, cy, cx + w, cy + h))
     card.alpha_composite(art, (x, y))
 
+    # Frame overlay
     frame = _load_frame_for_set(set_id)
     if frame is not None:
         card.alpha_composite(frame)
 
     draw = ImageDraw.Draw(card)
-    try:
-        font_name   = ImageFont.truetype(FONT_PATH_BOLD, 22)
-        font_series = ImageFont.truetype(FONT_PATH_REG, 18)
-        font_uid    = ImageFont.truetype(FONT_PATH_REG, 14)
-        font_small  = ImageFont.truetype(FONT_PATH_REG, 12)
-    except Exception:
-        font_name = font_series = font_uid = font_small = ImageFont.load_default()
 
     BLACK  = (0, 0, 0, 255)
     YELLOW = (255, 215, 64, 255)
     WHITE  = (255, 255, 255, 255)
 
-    name_rect   = (18, 40, CARD_W - 18, 90)
-    series_rect = (18, CARD_H - 100, CARD_W - 18, CARD_H - 60)
+    uid_box, name_box, series_box, br_box = _text_boxes_for_set(set_id)
 
-    def draw_centered(text: str, rect, font, fill):
-        l, t, r, b = rect
-        s = _truncate(draw, text, font, r - l - 10)
-        tw = draw.textlength(s, font=font)
-        th = font.getbbox(s)[3] - font.getbbox(s)[1]
-        tx = l + (r - l - tw) / 2
-        ty = t + (b - t - th) / 2
-        draw.text((tx, ty), s, font=font, fill=fill)
+    # Character (big, auto-fit in name box)
+    _draw_centered_fit(draw, str(character), name_box, FONT_PATH_BOLD, size_max=22, size_min=12, fill=BLACK)
 
-    draw_centered(str(character), name_rect, font_name, BLACK)
+    # Series (medium, auto-fit in series box)
+    _draw_centered_fit(draw, str(series), series_box, FONT_PATH_REG, size_max=18, size_min=10, fill=BLACK)
 
-    draw_centered(str(series), series_rect, font_series, BLACK)
+    # UID (small, uppercase)
+    _draw_centered_fit(draw, str(card_uid).upper(), uid_box, FONT_PATH_REG, size_max=12, size_min=8, fill=YELLOW)
 
-    uid_box, br_box = _text_boxes_for_set(set_id)
-    draw_centered(str(card_uid), uid_box, font_uid, YELLOW)
-
+    # Bottom-right (serial + edition), centered as one string,
+    # but with smaller edition font; if it doesn't fit, both shrink.
     l, t, r, b = br_box
-    serial_text = f"#{int(serial_number)} • "
-    set_text    = f"{int(set_id)}"
-    w_serial = draw.textlength(serial_text, font=font_small)
-    w_set    = draw.textlength(set_text, font=font_small)
-    total_w  = w_serial + w_set
-    x_start = r - total_w
-    y_mid = t + (b - t - (font_small.getbbox("A")[3] - font_small.getbbox("A")[1])) / 2
+    max_w = max(1, (r - l) - 2)
+    max_h = max(1, (b - t) - 2)
 
-    draw.text((x_start, y_mid), serial_text, font=font_small, fill=YELLOW)
-    draw.text((x_start + w_serial, y_mid), set_text, font=font_small, fill=WHITE)
+    serial_text = f"#{int(serial_number)} • "
+    set_text    = str(int(set_id)).upper()
+
+    # Start from intended sizes and shrink together until the combined width fits
+    size_serial = 12
+    size_set    = 12
+    min_serial  = 8
+    min_set     = 7
+
+    while True:
+        f_serial = _font_try(FONT_PATH_REG, size_serial)
+        f_set    = _font_try(FONT_PATH_REG, size_set)
+        w_serial = draw.textlength(serial_text, font=f_serial)
+        w_set    = draw.textlength(set_text,    font=f_set)
+        h_serial = f_serial.getbbox(serial_text)[3] - f_serial.getbbox(serial_text)[1]
+        h_set    = f_set.getbbox(set_text)[3]    - f_set.getbbox(set_text)[1]
+        total_w  = w_serial + w_set
+        total_h  = max(h_serial, h_set)
+        if total_w <= max_w and total_h <= max_h:
+            break
+        if size_serial > min_serial: size_serial -= 1
+        if size_set > min_set:       size_set    -= 1
+        if size_serial == min_serial and size_set == min_set:
+            break
+
+    # Center the combined pair in the br box
+    f_serial = _font_try(FONT_PATH_REG, size_serial)
+    f_set    = _font_try(FONT_PATH_REG, size_set)
+    w_serial = draw.textlength(serial_text, font=f_serial)
+    w_set    = draw.textlength(set_text,    font=f_set)
+    h_serial = f_serial.getbbox(serial_text)[3] - f_serial.getbbox(serial_text)[1]
+    h_set    = f_set.getbbox(set_text)[3]    - f_set.getbbox(set_text)[1]
+    total_w  = w_serial + w_set
+    total_h  = max(h_serial, h_set)
+
+    x_start = l + (max_w - total_w) / 2
+    y_start = t + (max_h - total_h) / 2
+
+    # Draw serial (yellow) then set id (white)
+    draw.text((x_start, y_start), serial_text, font=f_serial, fill=YELLOW)
+    draw.text((x_start + w_serial, y_start), set_text, font=f_set, fill=WHITE)
 
     buf = io.BytesIO()
     card.save(buf, format=fmt)
     return buf.getvalue()
 
-# --- for /drop (836x419 WEBP) ---
-
+# --- triptych for drops ---
 async def render_drop_triptych(db, cards: list[dict]) -> bytes:
-    import io
-    from PIL import Image
-
     target_w, target_h = 836, 419
-    padding = 20 
+    padding = 20
 
     available_w = target_w - (2 * padding)
     available_h = target_h - (2 * padding)
@@ -243,4 +307,3 @@ async def render_drop_triptych(db, cards: list[dict]) -> bytes:
     out = io.BytesIO()
     canvas.save(out, format="WEBP")
     return out.getvalue()
-

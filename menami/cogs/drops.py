@@ -43,15 +43,17 @@ class DropsCog(commands.Cog):
         drop = self.bot.active_drops.get(message_id)
         if not drop or drop.get("claimed"):
             return
+
         drop["claimed"] = True
         try:
             channel = self.bot.get_channel(drop["channel_id"]) or await self.bot.fetch_channel(drop["channel_id"])
             msg = await channel.fetch_message(message_id)
-            try:
-                await msg.clear_reactions()
-            except Exception:
-                pass
-            await msg.edit(content="Drop expired.")
+
+            original = msg.content or ""
+            newline = "\n" if original and not original.endswith("\n") else ""
+            expired_text = "*This drop has expired and the cards can no longer be grabbed.*"
+            await msg.edit(content=f"{original}{newline}{expired_text}")
+
         except Exception:
             pass
         finally:
@@ -79,7 +81,9 @@ class DropsCog(commands.Cog):
 
         img_bytes = await render_drop_triptych(self.bot.db, cards)
         file = discord.File(io.BytesIO(img_bytes), filename="drop.webp")
-        await interaction.response.send_message(file=file)
+
+        content = f"{interaction.user.mention} is dropping 3 cards!"
+        await interaction.response.send_message(content=content, file=file)
         msg = await interaction.original_response()
 
         start_ts = time.time()
@@ -88,13 +92,13 @@ class DropsCog(commands.Cog):
             "dropped_at": start_ts,
             "channel_id": ch_id,
             "guild_id": interaction.guild_id,
+            "owner_id": interaction.user.id,
             "claimed": False,
         }
         self.bot.channel_cooldowns[ch_id] = now
 
         asyncio.create_task(self.add_number_reactions(msg))
         asyncio.create_task(self.expire_message_if_unclaimed(msg.id))
-
 
     @commands.command(name="d", aliases=["md"])
     async def cmd_drop(self, ctx: commands.Context):
@@ -115,7 +119,9 @@ class DropsCog(commands.Cog):
 
         img_bytes = await render_drop_triptych(self.bot.db, cards)
         file = discord.File(io.BytesIO(img_bytes), filename="drop.webp")
-        sent = await ctx.send(file=file)
+
+        content = f"{ctx.author.mention} is dropping 3 cards!"
+        sent = await ctx.send(content=content, file=file)
 
         start_ts = time.time()
         self.bot.active_drops[sent.id] = {
@@ -123,6 +129,7 @@ class DropsCog(commands.Cog):
             "dropped_at": start_ts,
             "channel_id": ch_id,
             "guild_id": ctx.guild.id,
+            "owner_id": ctx.author.id,
             "claimed": False,
         }
         self.bot.channel_cooldowns[ch_id] = now
@@ -149,11 +156,10 @@ class DropsCog(commands.Cog):
             try:
                 channel = self.bot.get_channel(drop["channel_id"]) or await self.bot.fetch_channel(drop["channel_id"])
                 msg = await channel.fetch_message(payload.message_id)
-                try:
-                    await msg.clear_reactions()
-                except Exception:
-                    pass
-                await msg.edit(content="Drop expired.")
+                original = msg.content or ""
+                newline = "\n" if original and not original.endswith("\n") else ""
+                expired_text = "*This drop has expired and the cards can no longer be grabbed.*"
+                await msg.edit(content=f"{original}{newline}{expired_text}")
             except Exception:
                 pass
             self.bot.active_drops.pop(payload.message_id, None)
@@ -171,34 +177,23 @@ class DropsCog(commands.Cog):
         ok = await self.bot.db.claim_card(card_uid, payload.user_id, delay)
         if not ok:
             drop["claimed"] = True
-            try:
-                channel = self.bot.get_channel(drop["channel_id"]) or await self.bot.fetch_channel(drop["channel_id"])
-                msg = await channel.fetch_message(payload.message_id)
-                try:
-                    await msg.clear_reactions()
-                except Exception:
-                    pass
-                await msg.edit(content="This drop is already claimed.")
-            except Exception:
-                pass
             self.bot.active_drops.pop(payload.message_id, None)
             return
 
         drop["claimed"] = True
         try:
             channel = self.bot.get_channel(drop["channel_id"]) or await self.bot.fetch_channel(drop["channel_id"])
-            msg = await channel.fetch_message(payload.message_id)
             card = await self.bot.db.get_card(card_uid)
-            embed = format_card_embed(card, claimed=True)
-            try:
-                await msg.clear_reactions()
-            except Exception:
-                pass
-            await msg.edit(embed=embed, content=None)
+            condition = (card.get("condition") or "unknown").strip()
+            who = f"<@{payload.user_id}>"
+            char_name = card.get("character") or "Unknown"
+            ann = f"{who} took the **{char_name}** card `{card_uid}`! Unfortunately, it was **{condition}**."
+            await channel.send(ann)
         except Exception:
             pass
         finally:
             self.bot.active_drops.pop(payload.message_id, None)
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(DropsCog(bot))
