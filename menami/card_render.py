@@ -119,7 +119,6 @@ async def render_card_image(series: str, character: str, serial_number: int, set
                             card_uid: str, image_url: str | None, fmt="PNG") -> bytes:
     card = Image.new("RGBA", (CARD_W, CARD_H), (0, 0, 0, 0))
 
-    # --- load character art ---
     art = None
     if image_url:
         try:
@@ -133,7 +132,6 @@ async def render_card_image(series: str, character: str, serial_number: int, set
     if art is None:
         art = Image.new("RGBA", (CUT_W, CUT_H), (230, 230, 230, 255))
 
-    # --- fit art into cutout ---
     x, y, w, h = _cutout_for_set(set_id)
     scale = max(w / art.width, h / art.height)
     art = art.resize((int(art.width * scale), int(art.height * scale)), Image.LANCZOS)
@@ -142,29 +140,25 @@ async def render_card_image(series: str, character: str, serial_number: int, set
     art = art.crop((cx, cy, cx + w, cy + h))
     card.alpha_composite(art, (x, y))
 
-    # --- overlay frame ---
     frame = _load_frame_for_set(set_id)
     if frame is not None:
         card.alpha_composite(frame)
 
-    # --- text drawing ---
     draw = ImageDraw.Draw(card)
     try:
-        font_name   = ImageFont.truetype(FONT_PATH_BOLD, 22)   # character name
-        font_series = ImageFont.truetype(FONT_PATH_REG, 18)    # series
-        font_uid    = ImageFont.truetype(FONT_PATH_REG, 14)    # uid box
-        font_small  = ImageFont.truetype(FONT_PATH_REG, 12)    # serial/set
+        font_name   = ImageFont.truetype(FONT_PATH_BOLD, 22)
+        font_series = ImageFont.truetype(FONT_PATH_REG, 18)
+        font_uid    = ImageFont.truetype(FONT_PATH_REG, 14)
+        font_small  = ImageFont.truetype(FONT_PATH_REG, 12)
     except Exception:
         font_name = font_series = font_uid = font_small = ImageFont.load_default()
 
-    # Colors
     BLACK  = (0, 0, 0, 255)
     YELLOW = (255, 215, 64, 255)
     WHITE  = (255, 255, 255, 255)
 
-    # Panels for name & series (fixed areas, centered)
-    name_rect   = (18, 40, CARD_W - 18, 90)             # top panel
-    series_rect = (18, CARD_H - 100, CARD_W - 18, CARD_H - 60)  # above bottom
+    name_rect   = (18, 40, CARD_W - 18, 90)
+    series_rect = (18, CARD_H - 100, CARD_W - 18, CARD_H - 60)
 
     def draw_centered(text: str, rect, font, fill):
         l, t, r, b = rect
@@ -175,17 +169,13 @@ async def render_card_image(series: str, character: str, serial_number: int, set
         ty = t + (b - t - th) / 2
         draw.text((tx, ty), s, font=font, fill=fill)
 
-    # --- 1. Character name (centered, black) ---
     draw_centered(str(character), name_rect, font_name, BLACK)
 
-    # --- 2. Series name (centered, black) ---
     draw_centered(str(series), series_rect, font_series, BLACK)
 
-    # --- 3. UID in top black box (yellow) ---
     uid_box, br_box = _text_boxes_for_set(set_id)
     draw_centered(str(card_uid), uid_box, font_uid, YELLOW)
 
-    # --- 4. Serial/Set in bottom-right black box (yellow + white) ---
     l, t, r, b = br_box
     serial_text = f"#{int(serial_number)} • "
     set_text    = f"{int(set_id)}"
@@ -198,7 +188,6 @@ async def render_card_image(series: str, character: str, serial_number: int, set
     draw.text((x_start, y_mid), serial_text, font=font_small, fill=YELLOW)
     draw.text((x_start + w_serial, y_mid), set_text, font=font_small, fill=WHITE)
 
-    # --- export ---
     buf = io.BytesIO()
     card.save(buf, format=fmt)
     return buf.getvalue()

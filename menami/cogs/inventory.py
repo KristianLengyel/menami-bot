@@ -217,8 +217,32 @@ class InventoryCog(commands.Cog):
 
         stars = int(card["stars"])
         embed = build_burn_preview_embed(interaction.user, stars)
+
+        file = None
+        fname = None
+        try:
+            url = await self.bot.db.get_character_image(card["series"], card["character"], int(card["set_id"])) \
+                or await self.bot.db.get_character_image_any(card["series"], card["character"])
+            img_bytes = await render_card_image(
+                series=card["series"],
+                character=card["character"],
+                serial_number=int(card["serial_number"]),
+                set_id=int(card["set_id"]),
+                card_uid=card["card_uid"],
+                image_url=url,
+                fmt="PNG",
+            )
+            fname = f"{card['card_uid']}.png"
+            file = discord.File(io.BytesIO(img_bytes), filename=fname)
+            embed.set_thumbnail(url=f"attachment://{fname}")
+        except Exception:
+            pass
+
         view = ConfirmBurnView(self.bot, interaction.user.id, card["card_uid"], stars)
-        await interaction.response.send_message(embed=embed, view=view)
+        if file:
+            await interaction.response.send_message(embed=embed, view=view, file=file)
+        else:
+            await interaction.response.send_message(embed=embed, view=view)
         sent = await interaction.original_response()
         view.message = sent
 
@@ -236,8 +260,32 @@ class InventoryCog(commands.Cog):
 
         stars = int(card["stars"])
         embed = build_burn_preview_embed(ctx.author, stars)
+
+        file = None
+        fname = None
+        try:
+            url = await self.bot.db.get_character_image(card["series"], card["character"], int(card["set_id"])) \
+                or await self.bot.db.get_character_image_any(card["series"], card["character"])
+            img_bytes = await render_card_image(
+                series=card["series"],
+                character=card["character"],
+                serial_number=int(card["serial_number"]),
+                set_id=int(card["set_id"]),
+                card_uid=card["card_uid"],
+                image_url=url,
+                fmt="PNG",
+            )
+            fname = f"{card['card_uid']}.png"
+            file = discord.File(io.BytesIO(img_bytes), filename=fname)
+            embed.set_thumbnail(url=f"attachment://{fname}")
+        except Exception:
+            pass
+
         view = ConfirmBurnView(self.bot, ctx.author.id, card["card_uid"], stars)
-        sent = await ctx.send(embed=embed, view=view)
+        if file:
+            sent = await ctx.send(embed=embed, view=view, file=file)
+        else:
+            sent = await ctx.send(embed=embed, view=view)
         view.message = sent
 
     # -------- Upgrade --------

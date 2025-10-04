@@ -4,6 +4,9 @@ import math
 import random
 import discord
 from discord.ext import commands
+import io
+
+from .card_render import render_card_image
 
 from .embeds import (
     build_burn_result_embed,
@@ -245,11 +248,26 @@ class ConfirmBurnView(discord.ui.View):
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self.interaction_guard(interaction):
             return
+
+        card = await self.bot.db.get_card(self.card_uid)
+        if not card or card.get("owned_by") != str(self.requester_id):
+            await self.finalize(interaction, interaction.message.embeds[0], discord.Color.red(), "You don't own that card or it doesn't exist.")
+            return
+
         reward = await self.bot.db.burn(self.card_uid, self.requester_id)
         if reward is None:
             await self.finalize(interaction, interaction.message.embeds[0], discord.Color.red(), "You don't own that card or it doesn't exist.")
             return
-        await self.finalize(interaction, interaction.message.embeds[0], discord.Color.green(), "The card has been burned.")
+
+        base = interaction.message.embeds[0] if interaction.message.embeds else discord.Embed(title="Burn Card")
+        result = build_burn_result_embed(base, "The card has been burned.", discord.Color.green())
+
+        self._done = True
+        for c in self.children:
+            if isinstance(c, discord.ui.Button):
+                c.disabled = True
+
+        await interaction.response.edit_message(embed=result, view=self)
 
     async def on_timeout(self):
         if self._done or not self.message:
