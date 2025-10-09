@@ -1,0 +1,24 @@
+menami-bot/
+├── README.md
+├── bot.py
+├── generate_project_summary.py
+├── menami/
+│   ├── __init__.py
+│   ├── card_render.py
+│   ├── cogs/
+│   │   ├── __init__.py
+│   │   ├── cooldowns.py
+│   │   ├── drops.py
+│   │   ├── helpcmd.py
+│   │   ├── inventory.py
+│   │   ├── settings.py
+│   │   └── wishlist.py
+│   ├── config.py
+│   ├── db.py
+│   ├── embeds.py
+│   ├── helpers.py
+│   └── views.py
+├── menami.db
+├── project_combined_scripts.txt
+├── project_structure.txt
+├── requirements.txt
