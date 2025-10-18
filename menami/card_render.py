@@ -125,8 +125,15 @@ def _rand_rgb():
     r, g, b = colorsys.hsv_to_rgb(h, 0.8, 1.0)
     return (int(r*255), int(g*255), int(b*255))
 
+def _hex_to_rgba(color_hex: str, alpha: int = 255) -> tuple[int,int,int,int]:
+    h = color_hex.lstrip("#")
+    r = int(h[0:2], 16)
+    g = int(h[2:4], 16)
+    b = int(h[4:6], 16)
+    return (r, g, b, alpha)
+
 def _outer_glow_from_frame(frame: Image.Image, cutout_rect: tuple[int,int,int,int],
-                           tmin: int = 15, tmax: int = 20, alpha_max: int = 200) -> Image.Image:
+                           tmin: int = 15, tmax: int = 20, alpha_max: int = 200, color_hex: str | None = None) -> Image.Image:
     a = frame.split()[3]
     radius = random.randint(tmin, tmax)
     pad = radius * 2
@@ -142,7 +149,10 @@ def _outer_glow_from_frame(frame: Image.Image, cutout_rect: tuple[int,int,int,in
     outer = outer.point(lambda p: min(255, int(p * 1.8)))
     if alpha_max < 255:
         outer = ImageChops.multiply(outer, Image.new("L", outer.size, alpha_max))
-    color = _rand_rgb() + (255,)
+    if color_hex:
+        color = _hex_to_rgba(color_hex, 255)
+    else:
+        color = _rand_rgb() + (255,)
     glow = Image.new("RGBA", frame.size, color)
     glow.putalpha(outer)
     return glow
@@ -154,7 +164,9 @@ async def render_card_image(
     set_id: int,
     card_uid: str,
     image_url: str | None,
-    fmt="PNG"
+    fmt: str = "PNG",
+    apply_glow: bool = False,
+    glow_color_hex: str | None = None,
 ) -> bytes:
     card = Image.new("RGBA", (CARD_W, CARD_H), (0, 0, 0, 0))
     art = None
@@ -178,8 +190,9 @@ async def render_card_image(
     card.alpha_composite(art, (x, y))
     frame = _load_frame_for_set(set_id)
     if frame is not None:
-        glow = _outer_glow_from_frame(frame, (x, y, w, h), 5, 12, 200)
-        card.alpha_composite(glow)
+        if apply_glow:
+            glow = _outer_glow_from_frame(frame, (x, y, w, h), 5, 12, 200, glow_color_hex)
+            card.alpha_composite(glow)
         card.alpha_composite(frame)
     draw = ImageDraw.Draw(card)
     BLACK = (0, 0, 0, 255)
@@ -256,6 +269,7 @@ async def render_drop_triptych(db, cards: list[dict]) -> bytes:
             card_uid=c["card_uid"],
             image_url=url,
             fmt="PNG",
+            apply_glow=False,
         )
         im = Image.open(io.BytesIO(img_bytes)).convert("RGBA")
         im = im.resize((card_w, card_h), Image.LANCZOS)

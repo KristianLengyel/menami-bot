@@ -129,6 +129,17 @@ class DB:
                 PRIMARY KEY(user_id, series, character)
             );
                                    
+            CREATE TABLE IF NOT EXISTS user_dyes(
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              user_id TEXT NOT NULL,
+              code TEXT NOT NULL UNIQUE,
+              color_hex TEXT NOT NULL,
+              charges INTEGER NOT NULL DEFAULT 0,
+              name TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            );
+                                   
+            CREATE INDEX IF NOT EXISTS idx_user_dyes_user ON user_dyes(user_id, created_at);            
             CREATE INDEX IF NOT EXISTS idx_cards_owned_by ON cards(owned_by);
             CREATE INDEX IF NOT EXISTS idx_cards_series_character ON cards(series, character);
             CREATE INDEX IF NOT EXISTS idx_cards_series_character_set ON cards(series, character, set_id);
@@ -205,6 +216,24 @@ class DB:
             await db.execute("INSERT INTO guild_settings(guild_id) VALUES(?) ON CONFLICT(guild_id) DO NOTHING", (str(guild_id),))
             await db.execute("UPDATE guild_settings SET drop_cooldown_s=? WHERE guild_id=?", (seconds, str(guild_id)))
             await db.commit()
+
+    async def create_user_dye(self, user_id: int, code: str, color_hex: str, charges: int, name: str):
+        ts = _utcnow_iso()
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                "INSERT INTO user_dyes(user_id, code, color_hex, charges, name, created_at) VALUES(?,?,?,?,?,?)",
+                (str(user_id), code, color_hex, int(charges), name, ts)
+            )
+            await db.commit()
+
+    async def list_user_dyes(self, user_id: int) -> list[tuple[str,str,int,str]]:
+        async with aiosqlite.connect(self.path) as db:
+            cur = await db.execute(
+                "SELECT code, color_hex, charges, name FROM user_dyes WHERE user_id=? ORDER BY datetime(created_at) DESC",
+                (str(user_id),)
+            )
+            rows = await cur.fetchall()
+            return [(r[0], r[1], int(r[2]), r[3]) for r in rows]
 
     # ---------- wishlist ----------
     async def wishlist_count(self, user_id: int) -> int:
