@@ -28,6 +28,7 @@ class MenamiBot(commands.Bot):
         await self.load_extension("menami.cogs.settings")
         await self.load_extension("menami.cogs.cooldowns")
         await self.load_extension("menami.cogs.wishlist")
+        await self.load_extension("menami.cogs.dyes")
         await self.tree.sync()
 
 bot = MenamiBot()
@@ -234,8 +235,15 @@ def _rand_rgb():
     r, g, b = colorsys.hsv_to_rgb(h, 0.8, 1.0)
     return (int(r*255), int(g*255), int(b*255))
 
+def _hex_to_rgba(color_hex: str, alpha: int = 255) -> tuple[int,int,int,int]:
+    h = color_hex.lstrip("#")
+    r = int(h[0:2], 16)
+    g = int(h[2:4], 16)
+    b = int(h[4:6], 16)
+    return (r, g, b, alpha)
+
 def _outer_glow_from_frame(frame: Image.Image, cutout_rect: tuple[int,int,int,int],
-                           tmin: int = 15, tmax: int = 20, alpha_max: int = 200) -> Image.Image:
+                           tmin: int = 15, tmax: int = 20, alpha_max: int = 200, color_hex: str | None = None) -> Image.Image:
     a = frame.split()[3]
     radius = random.randint(tmin, tmax)
     pad = radius * 2
@@ -251,7 +259,10 @@ def _outer_glow_from_frame(frame: Image.Image, cutout_rect: tuple[int,int,int,in
     outer = outer.point(lambda p: min(255, int(p * 1.8)))
     if alpha_max < 255:
         outer = ImageChops.multiply(outer, Image.new("L", outer.size, alpha_max))
-    color = _rand_rgb() + (255,)
+    if color_hex:
+        color = _hex_to_rgba(color_hex, 255)
+    else:
+        color = _rand_rgb() + (255,)
     glow = Image.new("RGBA", frame.size, color)
     glow.putalpha(outer)
     return glow
@@ -263,7 +274,9 @@ async def render_card_image(
     set_id: int,
     card_uid: str,
     image_url: str | None,
-    fmt="PNG"
+    fmt: str = "PNG",
+    apply_glow: bool = False,
+    glow_color_hex: str | None = None,
 ) -> bytes:
     card = Image.new("RGBA", (CARD_W, CARD_H), (0, 0, 0, 0))
     art = None
@@ -287,8 +300,9 @@ async def render_card_image(
     card.alpha_composite(art, (x, y))
     frame = _load_frame_for_set(set_id)
     if frame is not None:
-        glow = _outer_glow_from_frame(frame, (x, y, w, h), 5, 12, 200)
-        card.alpha_composite(glow)
+        if apply_glow:
+            glow = _outer_glow_from_frame(frame, (x, y, w, h), 5, 12, 200, glow_color_hex)
+            card.alpha_composite(glow)
         card.alpha_composite(frame)
     draw = ImageDraw.Draw(card)
     BLACK = (0, 0, 0, 255)
@@ -365,6 +379,7 @@ async def render_drop_triptych(db, cards: list[dict]) -> bytes:
             card_uid=c["card_uid"],
             image_url=url,
             fmt="PNG",
+            apply_glow=False,
         )
         im = Image.open(io.BytesIO(img_bytes)).convert("RGBA")
         im = im.resize((card_w, card_h), Image.LANCZOS)
@@ -564,6 +579,17 @@ class DB:
                 PRIMARY KEY(user_id, series, character)
             );
                                    
+            CREATE TABLE IF NOT EXISTS user_dyes(
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              user_id TEXT NOT NULL,
+              code TEXT NOT NULL UNIQUE,
+              color_hex TEXT NOT NULL,
+              charges INTEGER NOT NULL DEFAULT 0,
+              name TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            );
+                                   
+            CREATE INDEX IF NOT EXISTS idx_user_dyes_user ON user_dyes(user_id, created_at);            
             CREATE INDEX IF NOT EXISTS idx_cards_owned_by ON cards(owned_by);
             CREATE INDEX IF NOT EXISTS idx_cards_series_character ON cards(series, character);
             CREATE INDEX IF NOT EXISTS idx_cards_series_character_set ON cards(series, character, set_id);
@@ -640,6 +666,24 @@ class DB:
             await db.execute("INSERT INTO guild_settings(guild_id) VALUES(?) ON CONFLICT(guild_id) DO NOTHING", (str(guild_id),))
             await db.execute("UPDATE guild_settings SET drop_cooldown_s=? WHERE guild_id=?", (seconds, str(guild_id)))
             await db.commit()
+
+    async def create_user_dye(self, user_id: int, code: str, color_hex: str, charges: int, name: str):
+        ts = _utcnow_iso()
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                "INSERT INTO user_dyes(user_id, code, color_hex, charges, name, created_at) VALUES(?,?,?,?,?,?)",
+                (str(user_id), code, color_hex, int(charges), name, ts)
+            )
+            await db.commit()
+
+    async def list_user_dyes(self, user_id: int) -> list[tuple[str,str,int,str]]:
+        async with aiosqlite.connect(self.path) as db:
+            cur = await db.execute(
+                "SELECT code, color_hex, charges, name FROM user_dyes WHERE user_id=? ORDER BY datetime(created_at) DESC",
+                (str(user_id),)
+            )
+            rows = await cur.fetchall()
+            return [(r[0], r[1], int(r[2]), r[3]) for r in rows]
 
     # ---------- wishlist ----------
     async def wishlist_count(self, user_id: int) -> int:
@@ -1523,6 +1567,7 @@ def build_upgrade_outcome_embed(base: discord.Embed, success: bool, new_stars: i
 import os
 import random
 import string
+import math
 from datetime import datetime, timezone
 from .config import STAR_MIN, STAR_MAX, QUALITY_BY_STARS, STAR_WEIGHTS
 
@@ -1554,7 +1599,6 @@ async def make_single_card_payload(db, invoker_id: int, guild_id: int) -> dict:
         series, character = ("Unknown Series", "Unknown Character")
     else:
         series, character = sc
-
     domain = list(range(STAR_MIN, STAR_MAX + 1))
     try:
         if len(STAR_WEIGHTS) != len(domain) or any(float(w) <= 0 for w in STAR_WEIGHTS):
@@ -1562,7 +1606,6 @@ async def make_single_card_payload(db, invoker_id: int, guild_id: int) -> dict:
         stars = int(random.choices(domain, weights=STAR_WEIGHTS, k=1)[0])
     except Exception:
         stars = int(random.randint(STAR_MIN, STAR_MAX))
-
     condition = QUALITY_BY_STARS.get(int(stars), "damaged")
     dropped_at = datetime.now(timezone.utc).isoformat()
     return {
@@ -1577,6 +1620,103 @@ async def make_single_card_payload(db, invoker_id: int, guild_id: int) -> dict:
         "dropped_in_server": str(guild_id),
         "dropped_by": str(invoker_id),
     }
+
+def _base36(n: int) -> str:
+    chars = "0123456789abcdefghijklmnopqrstuvwxyz"
+    if n == 0:
+        return "0"
+    s = ""
+    while n:
+        n, r = divmod(n, 36)
+        s = chars[r] + s
+    return s
+
+def generate_dye_code() -> str:
+    x = random.getrandbits(30)
+    core = _base36(x).lower()
+    core = ("vv" + core).ljust(6, "0")[:6]
+    return f"${core}"
+
+def _hsv_to_rgb_hex(h: float, s: float, v: float) -> str:
+    i = int(h * 6.0) % 6
+    f = h * 6.0 - int(h * 6.0)
+    p = v * (1.0 - s)
+    q = v * (1.0 - f * s)
+    t = v * (1.0 - (1.0 - f) * s)
+    if i == 0:
+        r, g, b = v, t, p
+    elif i == 1:
+        r, g, b = q, v, p
+    elif i == 2:
+        r, g, b = p, v, t
+    elif i == 3:
+        r, g, b = p, q, v
+    elif i == 4:
+        r, g, b = t, p, v
+    else:
+        r, g, b = v, p, q
+    return "#{:02x}{:02x}{:02x}".format(int(r * 255), int(g * 255), int(b * 255))
+
+def random_color_hex_with_weights() -> str:
+    r = random.random()
+    if r < 0.006:
+        return "#ff0000"
+    if r < 0.010:
+        return "#ffffff"
+    if r < 0.014:
+        return "#000000"
+    h = random.random()
+    s = 0.55 + random.random() * 0.4
+    v = 0.6 + random.random() * 0.35
+    return _hsv_to_rgb_hex(h, s, v)
+
+_ADJ = ["Mystic","Lovely","Euphoric","Barbarian","Azure","Crimson","Ivory","Obsidian","Wizard","Romantic","Vice","Celestial","Neon","Frosted","Dusky","Radiant","Velvet","Phantom","Atomic","Retro"]
+_NOUN = ["Petal","Plush","Delight","Flesh","Atoll","Blue","City","Eclipse","Glow","Dream","Ember","Whisper","Charm","Mirage","Pulse","Velour","Dawn","Twilight","Storm","Bloom"]
+
+def dye_name_from_seed(code: str, color_hex: str) -> str:
+    seed = sum(ord(c) for c in (code + color_hex))
+    a = _ADJ[seed % len(_ADJ)]
+    b = _NOUN[(seed // 7) % len(_NOUN)]
+    c = _NOUN[(seed // 37) % len(_NOUN)]
+    if b == c:
+        c = _ADJ[(seed // 11) % len(_ADJ)]
+    return f"{a} {b} {c}"
+
+def _hex_to_rgb(color_hex: str) -> tuple[int, int, int]:
+    hx = color_hex.lstrip("#")
+    return int(hx[0:2], 16), int(hx[2:4], 16), int(hx[4:6], 16)
+
+def circle_name_for_color(color_hex: str) -> str:
+    r, g, b = _hex_to_rgb(color_hex)
+    if r < 28 and g < 28 and b < 28:
+        return "black"
+    if r > 227 and g > 227 and b > 227:
+        return "white"
+    num = (g - b) * 0.8660254037844386
+    den = 2 * r - g - b
+    hue = math.atan2(num, den)
+    hue = (hue + 2 * math.pi) % (2 * math.pi)
+    h = hue / (2 * math.pi)
+    v = max(r, g, b) / 255.0
+    s = 0 if v == 0 else 1 - (min(r, g, b) / 255.0) / v
+    if 0.04 <= h < 0.14:
+        if v < 0.65 and s > 0.5:
+            return "brown"
+    if h < 1/12 or h >= 11/12:
+        return "red"
+    if h < 3/12:
+        return "orange"
+    if h < 5/12:
+        return "yellow"
+    if h < 7/12:
+        return "green"
+    if h < 9/12:
+        return "blue"
+    return "purple"
+
+def emoji_shortcode_for_color(color_hex: str) -> str:
+    name = circle_name_for_color(color_hex)
+    return f":{name}_circle:"
 
 
 # ===== menami\views.py =====
@@ -2431,6 +2571,87 @@ class DropsCog(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(DropsCog(bot))
+
+
+# ===== menami\cogs\dyes.py =====
+
+import discord
+from discord.ext import commands
+from menami.helpers import (
+    generate_dye_code,
+    random_color_hex_with_weights,
+    dye_name_from_seed,
+    emoji_shortcode_for_color,
+)
+
+class Dyes(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.db = bot.db
+
+    @commands.command(name="dye")
+    async def cmd_dye(self, ctx: commands.Context):
+        code = generate_dye_code()
+        color_hex = random_color_hex_with_weights()
+        name = dye_name_from_seed(code, color_hex)
+        charges = 1
+        await self.db.create_user_dye(ctx.author.id, code, color_hex, charges, name)
+
+        emoji = emoji_shortcode_for_color(color_hex)
+        e = discord.Embed(
+            title="New Dye Acquired",
+            description=f"{emoji} `{code}` · {charges} charge · {name}\n{color_hex.upper()}",
+            color=discord.Color.from_str(color_hex),
+        )
+        e.set_author(name=str(ctx.author), icon_url=getattr(ctx.author.display_avatar, "url", None))
+        await ctx.reply(embed=e, mention_author=False)
+
+    @commands.command(name="dyes")
+    async def cmd_dyes(self, ctx: commands.Context):
+        rows = await self.db.list_user_dyes(ctx.author.id)
+
+        title = "Dye Collection"
+        header = f"Dyes owned by {ctx.author.mention}"
+
+        if not rows:
+            e = discord.Embed(
+                title=title,
+                description=header + "\nNo dyes yet. Use `mu dye` to get one.",
+                color=discord.Color.dark_grey(),
+            )
+            e.set_author(name=str(ctx.author), icon_url=getattr(ctx.author.display_avatar, "url", None))
+            await ctx.reply(embed=e, mention_author=False)
+            return
+
+        lines = []
+        for code, color_hex, charges, name in rows:
+            emoji = emoji_shortcode_for_color(color_hex)
+            charges_txt = "charge" if charges == 1 else "charges"
+            lines.append(f"{emoji} `{code}` · {charges} {charges_txt} · {name}")
+
+        e = discord.Embed(
+            title=title,
+            description=header + "\n\n" + "\n".join(lines),
+            color=discord.Color.blurple(),
+        )
+        e.set_author(name=str(ctx.author), icon_url=getattr(ctx.author.display_avatar, "url", None))
+        await ctx.reply(embed=e, mention_author=False)
+
+    @commands.command(name="u")
+    async def cmd_u(self, ctx: commands.Context, subcommand: str | None = None, *args):
+        if not subcommand:
+            await ctx.reply("Usage: `mu dye` or `mdyes`", mention_author=False)
+            return
+        sub = subcommand.lower()
+        if sub == "dye":
+            await self.cmd_dye(ctx)
+        elif sub == "dyes":
+            await self.cmd_dyes(ctx)
+        else:
+            await ctx.reply("Unknown subcommand. Try `mu dye` or `mdyes`.", mention_author=False)
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(Dyes(bot))
 
 
 # ===== menami\cogs\helpcmd.py =====

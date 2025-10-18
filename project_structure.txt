@@ -10,6 +10,7 @@ menami-bot/
 │   │   ├── __init__.py
 │   │   ├── cooldowns.py
 │   │   ├── drops.py
+│   │   ├── dyes.py
 │   │   ├── helpcmd.py
 │   │   ├── inventory.py
 │   │   ├── settings.py
@@ -21,4 +22,6 @@ menami-bot/
 │   └── views.py
 ├── menami.backup.db
 ├── menami.db
+├── project_combined_scripts.txt
+├── project_structure.txt
 ├── requirements.txt

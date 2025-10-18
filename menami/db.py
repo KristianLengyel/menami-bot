@@ -139,6 +139,15 @@ class DB:
               created_at TEXT NOT NULL
             );
                                    
+            CREATE TABLE IF NOT EXISTS card_dyes(
+                card_uid  TEXT PRIMARY KEY,
+                code      TEXT NOT NULL,
+                color_hex TEXT NOT NULL,
+                name      TEXT NOT NULL,
+                applied_at TEXT NOT NULL,
+                FOREIGN KEY(card_uid) REFERENCES cards(card_uid)
+            );
+                 
             CREATE INDEX IF NOT EXISTS idx_user_dyes_user ON user_dyes(user_id, created_at);            
             CREATE INDEX IF NOT EXISTS idx_cards_owned_by ON cards(owned_by);
             CREATE INDEX IF NOT EXISTS idx_cards_series_character ON cards(series, character);
@@ -156,6 +165,15 @@ class DB:
             INSERT OR IGNORE INTO meta(key, value) VALUES('editions_max', '5');
             INSERT OR IGNORE INTO meta(key, value) VALUES('edition_weights', '[1,2,3,5,9]');
             """)
+            # --- MIGRATIONS: add thickness columns if missing ---
+            cols_ud = {row[1] for row in await (await db.execute("PRAGMA table_info(user_dyes)")).fetchall()}
+            if "thickness" not in cols_ud:
+                await db.execute("ALTER TABLE user_dyes ADD COLUMN thickness INTEGER NOT NULL DEFAULT 8")
+
+            cols_cd = {row[1] for row in await (await db.execute("PRAGMA table_info(card_dyes)")).fetchall()}
+            if "thickness" not in cols_cd:
+                await db.execute("ALTER TABLE card_dyes ADD COLUMN thickness INTEGER NOT NULL DEFAULT 8")
+            # ----------------------------------------------------
             cols_u = {row[1] for row in await (await db.execute("PRAGMA table_info(users)")).fetchall()}
             for col in ["gems", "tickets", "dust_damaged", "dust_poor", "dust_good", "dust_excellent", "dust_mint"]:
                 if col not in cols_u:
@@ -217,23 +235,74 @@ class DB:
             await db.execute("UPDATE guild_settings SET drop_cooldown_s=? WHERE guild_id=?", (seconds, str(guild_id)))
             await db.commit()
 
-    async def create_user_dye(self, user_id: int, code: str, color_hex: str, charges: int, name: str):
+    # ---------- dyes ----------
+    async def create_user_dye(self, user_id: int, code: str, color_hex: str, charges: int, name: str, thickness: int):
         ts = _utcnow_iso()
         async with aiosqlite.connect(self.path) as db:
             await db.execute(
-                "INSERT INTO user_dyes(user_id, code, color_hex, charges, name, created_at) VALUES(?,?,?,?,?,?)",
-                (str(user_id), code, color_hex, int(charges), name, ts)
+                "INSERT INTO user_dyes(user_id, code, color_hex, charges, name, created_at, thickness) VALUES(?,?,?,?,?,?,?)",
+                (str(user_id), code, color_hex, int(charges), name, ts, int(thickness))
             )
             await db.commit()
 
-    async def list_user_dyes(self, user_id: int) -> list[tuple[str,str,int,str]]:
+    async def list_user_dyes(self, user_id: int) -> list[tuple[str,str,int,str,int]]:
         async with aiosqlite.connect(self.path) as db:
             cur = await db.execute(
-                "SELECT code, color_hex, charges, name FROM user_dyes WHERE user_id=? ORDER BY datetime(created_at) DESC",
+                "SELECT code, color_hex, charges, name, thickness FROM user_dyes WHERE user_id=? ORDER BY datetime(created_at) DESC",
                 (str(user_id),)
             )
             rows = await cur.fetchall()
-            return [(r[0], r[1], int(r[2]), r[3]) for r in rows]
+            return [(r[0], r[1], int(r[2]), r[3], int(r[4])) for r in rows]
+
+    async def get_user_dye(self, user_id: int, code: str) -> tuple[str, str, int, str, int] | None:
+        async with aiosqlite.connect(self.path) as db:
+            cur = await db.execute(
+                "SELECT code, color_hex, charges, name, thickness FROM user_dyes WHERE user_id=? AND LOWER(code)=LOWER(?)",
+                (str(user_id), code)
+            )
+            row = await cur.fetchone()
+            return (row[0], row[1], int(row[2]), row[3], int(row[4])) if row else None
+
+    async def consume_user_dye(self, user_id: int, code: str) -> bool:
+        async with aiosqlite.connect(self.path) as db:
+            cur = await db.execute(
+                "UPDATE user_dyes SET charges = charges - 1 WHERE user_id=? AND LOWER(code)=LOWER(?) AND charges > 0",
+                (str(user_id), code)
+            )
+            await db.commit()
+            return cur.rowcount == 1
+
+    async def set_card_dye(self, card_uid: str, code: str, color_hex: str, name: str, thickness: int):
+        ts = _utcnow_iso()
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("""
+                INSERT INTO card_dyes(card_uid, code, color_hex, name, applied_at, thickness)
+                VALUES(?,?,?,?,?,?)
+                ON CONFLICT(card_uid) DO UPDATE SET
+                    code=excluded.code,
+                    color_hex=excluded.color_hex,
+                    name=excluded.name,
+                    applied_at=excluded.applied_at,
+                    thickness=excluded.thickness
+            """, (card_uid, code, color_hex, name, ts, int(thickness)))
+            await db.commit()
+
+    async def get_card_dye(self, card_uid: str) -> tuple[str, str, str, str, int] | None:
+        async with aiosqlite.connect(self.path) as db:
+            cur = await db.execute("SELECT card_uid, code, color_hex, name, thickness FROM card_dyes WHERE card_uid=?", (card_uid,))
+            row = await cur.fetchone()
+            return (row[0], row[1], row[2], row[3], int(row[4])) if row else None
+
+
+    async def remove_card_dye(self, card_uid: str):
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("DELETE FROM card_dyes WHERE card_uid=?", (card_uid,))
+            await db.commit()
+
+    async def user_owns_card(self, user_id: int, card_uid: str) -> bool:
+        async with aiosqlite.connect(self.path) as db:
+            cur = await db.execute("SELECT 1 FROM cards WHERE card_uid=? AND owned_by=?", (card_uid, str(user_id)))
+            return (await cur.fetchone()) is not None
 
     # ---------- wishlist ----------
     async def wishlist_count(self, user_id: int) -> int:

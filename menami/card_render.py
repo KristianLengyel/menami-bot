@@ -1,5 +1,6 @@
 from __future__ import annotations
 import io
+import io as _io_local
 from typing import Tuple
 import aiohttp
 import os
@@ -133,9 +134,9 @@ def _hex_to_rgba(color_hex: str, alpha: int = 255) -> tuple[int,int,int,int]:
     return (r, g, b, alpha)
 
 def _outer_glow_from_frame(frame: Image.Image, cutout_rect: tuple[int,int,int,int],
-                           tmin: int = 15, tmax: int = 20, alpha_max: int = 200, color_hex: str | None = None) -> Image.Image:
+                           tmin: int = 15, tmax: int = 20, alpha_max: int = 200, color_hex: str | None = None, thickness: int | None = None,) -> Image.Image:
     a = frame.split()[3]
-    radius = random.randint(tmin, tmax)
+    radius = int(thickness) if thickness is not None else random.randint(tmin, tmax)
     pad = radius * 2
     big = Image.new("L", (a.width + 2*pad, a.height + 2*pad), 0)
     big.paste(a, (pad, pad))
@@ -167,6 +168,7 @@ async def render_card_image(
     fmt: str = "PNG",
     apply_glow: bool = False,
     glow_color_hex: str | None = None,
+    glow_thickness: int | None = None,
 ) -> bytes:
     card = Image.new("RGBA", (CARD_W, CARD_H), (0, 0, 0, 0))
     art = None
@@ -191,7 +193,7 @@ async def render_card_image(
     frame = _load_frame_for_set(set_id)
     if frame is not None:
         if apply_glow:
-            glow = _outer_glow_from_frame(frame, (x, y, w, h), 5, 12, 200, glow_color_hex)
+            glow = _outer_glow_from_frame(frame, (x, y, w, h), 5, 12, 200, glow_color_hex, thickness=glow_thickness)
             card.alpha_composite(glow)
         card.alpha_composite(frame)
     draw = ImageDraw.Draw(card)
@@ -282,3 +284,27 @@ async def render_drop_triptych(db, cards: list[dict]) -> bytes:
     out = io.BytesIO()
     canvas.save(out, format="WEBP")
     return out.getvalue()
+
+async def render_dye_preview(before_bytes: bytes, after_bytes: bytes) -> bytes:
+    left = Image.open(_io_local.BytesIO(before_bytes)).convert("RGBA")
+    right = Image.open(_io_local.BytesIO(after_bytes)).convert("RGBA")
+    h = max(left.height, right.height)
+    left = left.resize((int(left.width * (h / left.height)), h), Image.LANCZOS)
+    right = right.resize((int(right.width * (h / right.height)), h), Image.LANCZOS)
+
+    arrow_w = 64
+    arrow = Image.new("RGBA", (arrow_w, h), (0, 0, 0, 0))
+    d = ImageDraw.Draw(arrow)
+    cx = arrow_w // 2
+    d.polygon([(cx - 16, h//2 - 20), (cx - 16, h//2 + 20), (cx + 16, h//2)], fill=(200, 0, 200, 220))
+
+    pad = 16
+    out = Image.new("RGBA", (left.width + arrow_w + right.width + pad * 4, h + pad * 2), (0, 0, 0, 0))
+    x = pad
+    out.alpha_composite(left, (x, pad)); x += left.width + pad
+    out.alpha_composite(arrow, (x, pad)); x += arrow_w + pad
+    out.alpha_composite(right, (x, pad))
+
+    buf = _io_local.BytesIO()
+    out.save(buf, format="WEBP")
+    return buf.getvalue()
