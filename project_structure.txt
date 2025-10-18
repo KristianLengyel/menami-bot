@@ -1,6 +1,7 @@
 menami-bot/
 ├── README.md
 ├── bot.py
+├── firebase_key.json
 ├── generate_project_summary.py
 ├── menami/
 │   ├── __init__.py
@@ -18,7 +19,6 @@ menami-bot/
 │   ├── embeds.py
 │   ├── helpers.py
 │   └── views.py
+├── menami.backup.db
 ├── menami.db
-├── project_combined_scripts.txt
-├── project_structure.txt
 ├── requirements.txt

@@ -3,7 +3,9 @@ import io
 from typing import Tuple
 import aiohttp
 import os
-from PIL import Image, ImageDraw, ImageFont, ImageFilter
+import random
+import colorsys
+from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageChops
 
 CARD_W, CARD_H = 274, 405
 CUT_W, CUT_H = 211, 314
@@ -19,60 +21,32 @@ FRAME_CUTOUTS: dict[int, tuple[int, int, int, int]] = {
 }
 
 TEXT_BOXES: dict[int, dict[str, tuple[int, int, int, int]]] = {
-    5: {
-        "uid":    (58, 28, 114, 38),
-        "name":   (65, 51, 208, 90),
-        "series": (44, 303, 229, 347),
-        "br":     (154, 360, 199, 370),
-    },
-    4: {
-        "uid":    (62, 27, 117, 36),
-        "name":   (61, 47, 212, 90),
-        "series": (50, 301, 223, 352),
-        "br":     (159, 361, 215, 372),
-    },
-    3: {
-        "uid":    (63, 29, 118, 40),
-        "name":   (65, 51, 208, 91),
-        "series": (53, 307, 220, 350),
-        "br":     (158, 360, 211, 372),
-    },
-    2: {
-        "uid":    (64, 26, 117, 36),
-        "name":   (54, 52, 219, 90),
-        "series": (54, 308, 219, 347),
-        "br":     (157, 363, 211, 372),
-    },
-    1: {
-        "uid":    (57, 28, 111, 40),
-        "name":   (59, 53, 214, 91),
-        "series": (59, 310, 214, 348),
-        "br":     (164, 359, 219, 371),
-    },
+    5: {"uid": (58, 28, 114, 38), "name": (65, 51, 208, 90), "series": (44, 303, 229, 347), "br": (154, 360, 199, 370)},
+    4: {"uid": (62, 27, 117, 36), "name": (61, 47, 212, 90), "series": (50, 301, 223, 352), "br": (159, 361, 215, 372)},
+    3: {"uid": (63, 29, 118, 40), "name": (65, 51, 208, 91), "series": (53, 307, 220, 350), "br": (158, 360, 211, 372)},
+    2: {"uid": (64, 26, 117, 36), "name": (54, 52, 219, 90), "series": (54, 308, 219, 347), "br": (157, 363, 211, 372)},
+    1: {"uid": (57, 28, 111, 40), "name": (59, 53, 214, 91), "series": (59, 310, 214, 348), "br": (164, 359, 219, 371)},
 }
 
-BG_COLOR     = (18, 24, 38)
-PANEL_COLOR  = (245, 238, 220)
-PANEL_TEXT   = (30, 22, 18)
-ACCENT       = (208, 180, 120)
+BG_COLOR = (18, 24, 38)
+PANEL_COLOR = (245, 238, 220)
+PANEL_TEXT = (30, 22, 18)
+ACCENT = (208, 180, 120)
 
 FONT_PATH_BOLD = "assets/fonts/Alkia.ttf"
-FONT_PATH_REG  = "assets/fonts/Alkia.ttf"
+FONT_PATH_REG = "assets/fonts/Alkia.ttf"
 
 FRAME_DIR = "assets/frames"
 
 def _text_boxes_for_set(set_id: int) -> tuple[
-    tuple[int,int,int,int],  # uid
-    tuple[int,int,int,int],  # name
-    tuple[int,int,int,int],  # series
-    tuple[int,int,int,int],  # serial+edition
+    tuple[int,int,int,int], tuple[int,int,int,int], tuple[int,int,int,int], tuple[int,int,int,int]
 ]:
     spec = TEXT_BOXES.get(int(set_id))
     if not spec:
-        uid_box    = (70, 0, 204, 22)
-        name_box   = (18, 40, CARD_W - 18, 90)
+        uid_box = (70, 0, 204, 22)
+        name_box = (18, 40, CARD_W - 18, 90)
         series_box = (18, CARD_H - 100, CARD_W - 18, CARD_H - 60)
-        br_box     = (160, 385, 265, 405)
+        br_box = (160, 385, 265, 405)
         return uid_box, name_box, series_box, br_box
     return spec["uid"], spec["name"], spec["series"], spec["br"]
 
@@ -139,12 +113,39 @@ def _draw_centered_fit(draw: ImageDraw.ImageDraw, text: str, rect: tuple[int,int
     return font
 
 def _round_rect(dst, rect, fill, radius=8, outline=None, outline_width=1):
-    x0,y0,x1,y1 = rect
+    x0, y0, x1, y1 = rect
     rr = Image.new("RGBA", (x1-x0, y1-y0), (0,0,0,0))
     d = ImageDraw.Draw(rr)
     d.rounded_rectangle((0,0,rr.width-1, rr.height-1), radius=radius,
                         fill=fill, outline=outline, width=outline_width)
     dst.alpha_composite(rr, (x0,y0))
+
+def _rand_rgb():
+    h = random.random()
+    r, g, b = colorsys.hsv_to_rgb(h, 0.8, 1.0)
+    return (int(r*255), int(g*255), int(b*255))
+
+def _outer_glow_from_frame(frame: Image.Image, cutout_rect: tuple[int,int,int,int],
+                           tmin: int = 15, tmax: int = 20, alpha_max: int = 200) -> Image.Image:
+    a = frame.split()[3]
+    radius = random.randint(tmin, tmax)
+    pad = radius * 2
+    big = Image.new("L", (a.width + 2*pad, a.height + 2*pad), 0)
+    big.paste(a, (pad, pad))
+    big_blur = big.filter(ImageFilter.GaussianBlur(radius))
+    blur = big_blur.crop((pad, pad, pad + a.width, pad + a.height))
+    outer = ImageChops.subtract(blur, a)
+    x, y, w, h = cutout_rect
+    outside_mask = Image.new("L", a.size, 255)
+    ImageDraw.Draw(outside_mask).rectangle([x, y, x+w, y+h], fill=0)
+    outer = ImageChops.multiply(outer, outside_mask)
+    outer = outer.point(lambda p: min(255, int(p * 1.8)))
+    if alpha_max < 255:
+        outer = ImageChops.multiply(outer, Image.new("L", outer.size, alpha_max))
+    color = _rand_rgb() + (255,)
+    glow = Image.new("RGBA", frame.size, color)
+    glow.putalpha(outer)
+    return glow
 
 async def render_card_image(
     series: str,
@@ -156,7 +157,6 @@ async def render_card_image(
     fmt="PNG"
 ) -> bytes:
     card = Image.new("RGBA", (CARD_W, CARD_H), (0, 0, 0, 0))
-
     art = None
     if image_url:
         try:
@@ -168,8 +168,7 @@ async def render_card_image(
         except Exception:
             art = None
     if art is None:
-        art = Image.new("RGBA", (CUT_W, CUT_H), (230, 230, 230, 255))
-
+        art = Image.new("RGBA", (CUT_W, CUT_H), (255, 255, 255, 255))
     x, y, w, h = _cutout_for_set(set_id)
     scale = max(w / art.width, h / art.height)
     art = art.resize((int(art.width * scale), int(art.height * scale)), Image.LANCZOS)
@@ -177,66 +176,57 @@ async def render_card_image(
     cy = (art.height - h) // 2
     art = art.crop((cx, cy, cx + w, cy + h))
     card.alpha_composite(art, (x, y))
-
     frame = _load_frame_for_set(set_id)
     if frame is not None:
+        glow = _outer_glow_from_frame(frame, (x, y, w, h), 5, 12, 200)
+        card.alpha_composite(glow)
         card.alpha_composite(frame)
-
     draw = ImageDraw.Draw(card)
-
-    BLACK  = (0, 0, 0, 255)
+    BLACK = (0, 0, 0, 255)
     YELLOW = (255, 215, 64, 255)
-    WHITE  = (255, 255, 255, 255)
-
+    WHITE = (255, 255, 255, 255)
     uid_box, name_box, series_box, br_box = _text_boxes_for_set(set_id)
-
     _draw_centered_fit(draw, str(character), name_box, FONT_PATH_BOLD, size_max=22, size_min=12, fill=BLACK)
     _draw_centered_fit(draw, str(series), series_box, FONT_PATH_REG, size_max=18, size_min=10, fill=BLACK)
     _draw_centered_fit(draw, str(card_uid).upper(), uid_box, FONT_PATH_REG, size_max=12, size_min=8, fill=YELLOW)
-
     l, t, r, b = br_box
     max_w = max(1, (r - l) - 2)
     max_h = max(1, (b - t) - 2)
-
     serial_text = f"#{int(serial_number)} • "
-    set_text    = str(int(set_id)).upper()
-
+    set_text = str(int(set_id)).upper()
     size_serial = 12
-    size_set    = 12
-    min_serial  = 8
-    min_set     = 7
-
+    size_set = 12
+    min_serial = 8
+    min_set = 7
     while True:
         f_serial = _font_try(FONT_PATH_REG, size_serial)
-        f_set    = _font_try(FONT_PATH_REG, size_set)
+        f_set = _font_try(FONT_PATH_REG, size_set)
         w_serial = draw.textlength(serial_text, font=f_serial)
-        w_set    = draw.textlength(set_text,    font=f_set)
+        w_set = draw.textlength(set_text, font=f_set)
         h_serial = f_serial.getbbox(serial_text)[3] - f_serial.getbbox(serial_text)[1]
-        h_set    = f_set.getbbox(set_text)[3]    - f_set.getbbox(set_text)[1]
-        total_w  = w_serial + w_set
-        total_h  = max(h_serial, h_set)
+        h_set = f_set.getbbox(set_text)[3] - f_set.getbbox(set_text)[1]
+        total_w = w_serial + w_set
+        total_h = max(h_serial, h_set)
         if total_w <= max_w and total_h <= max_h:
             break
-        if size_serial > min_serial: size_serial -= 1
-        if size_set > min_set:       size_set    -= 1
+        if size_serial > min_serial:
+            size_serial -= 1
+        if size_set > min_set:
+            size_set -= 1
         if size_serial == min_serial and size_set == min_set:
             break
-
     f_serial = _font_try(FONT_PATH_REG, size_serial)
-    f_set    = _font_try(FONT_PATH_REG, size_set)
+    f_set = _font_try(FONT_PATH_REG, size_set)
     w_serial = draw.textlength(serial_text, font=f_serial)
-    w_set    = draw.textlength(set_text,    font=f_set)
+    w_set = draw.textlength(set_text, font=f_set)
     h_serial = f_serial.getbbox(serial_text)[3] - f_serial.getbbox(serial_text)[1]
-    h_set    = f_set.getbbox(set_text)[3]    - f_set.getbbox(set_text)[1]
-    total_w  = w_serial + w_set
-    total_h  = max(h_serial, h_set)
-
+    h_set = f_set.getbbox(set_text)[3] - f_set.getbbox(set_text)[1]
+    total_w = w_serial + w_set
+    total_h = max(h_serial, h_set)
     x_start = l + (max_w - total_w) / 2
     y_start = t + (max_h - total_h) / 2
-
     draw.text((x_start, y_start), serial_text, font=f_serial, fill=YELLOW)
     draw.text((x_start + w_serial, y_start), set_text, font=f_set, fill=WHITE)
-
     buf = io.BytesIO()
     card.save(buf, format=fmt)
     return buf.getvalue()
@@ -244,27 +234,20 @@ async def render_card_image(
 async def render_drop_triptych(db, cards: list[dict]) -> bytes:
     target_w, target_h = 836, 419
     padding = 20
-
     available_w = target_w - (2 * padding)
     available_h = target_h - (2 * padding)
-
     orig_w, orig_h = 274, 405
-
     scale = min(available_h / orig_h, (available_w / 3) / orig_w)
     card_w, card_h = int(orig_w * scale), int(orig_h * scale)
-
     total_card_w = card_w * 3
     remaining_w = target_w - total_card_w
     gap = remaining_w // 4
-
     canvas = Image.new("RGBA", (target_w, target_h), (0, 0, 0, 0))
     rendered_images: list[Image.Image] = []
-
     for c in cards:
         url = await db.get_character_image(c["series"], c["character"], int(c["set_id"]))
         if not url:
             url = await db.get_character_image_any(c["series"], c["character"])
-
         img_bytes = await render_card_image(
             series=c["series"],
             character=c["character"],
@@ -277,13 +260,11 @@ async def render_drop_triptych(db, cards: list[dict]) -> bytes:
         im = Image.open(io.BytesIO(img_bytes)).convert("RGBA")
         im = im.resize((card_w, card_h), Image.LANCZOS)
         rendered_images.append(im)
-
     y = (target_h - card_h) // 2
     x = gap
     for im in rendered_images:
         canvas.alpha_composite(im, (x, y))
         x += card_w + gap
-
     out = io.BytesIO()
     canvas.save(out, format="WEBP")
     return out.getvalue()

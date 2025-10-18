@@ -4,27 +4,33 @@ import os, sys, argparse, pathlib, re, json, shlex, subprocess, sqlite3
 from datetime import datetime, timezone
 from typing import List, Tuple, Dict
 from PIL import Image
-from supabase import create_client, Client
 
 BASE_DIR = pathlib.Path(__file__).resolve().parents[1]
 ASSETS = BASE_DIR / "assets" / "characters"
 CHAR_FILE = BASE_DIR / "characters.json"
 DB_PATH = BASE_DIR / "menami.db"
 
-# ====== Supabase config from environment ======
-SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
-SUPABASE_BUCKET = os.getenv("SUPABASE_BUCKET", "cards").strip()
+FIREBASE_KEY = os.getenv("FIREBASE_KEY", "").strip()
+FIREBASE_BUCKET = os.getenv("FIREBASE_BUCKET", "").strip()
 
-def require_supabase():
-    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
-        print("[ERROR] Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY environment variables.")
+def require_firebase():
+    if not FIREBASE_KEY or not FIREBASE_BUCKET:
+        print("[ERROR] Set FIREBASE_KEY path and FIREBASE_BUCKET name environment variables.")
         sys.exit(1)
 
-def supa_client() -> Client:
-    return create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+_firebase_inited = False
+def firebase_bucket():
+    global _firebase_inited
+    from firebase_admin import credentials, storage, initialize_app, get_app
+    if not _firebase_inited:
+        try:
+            get_app()
+        except ValueError:
+            cred = credentials.Certificate(FIREBASE_KEY)
+            initialize_app(cred, {"storageBucket": FIREBASE_BUCKET})
+        _firebase_inited = True
+    return storage.bucket()
 
-# ====== Helpers ======
 def slugify(s: str) -> str:
     s = s.strip().lower()
     s = re.sub(r"[^\w\s\-\.]", "", s)
@@ -106,46 +112,30 @@ def upsert_character_image(series: str, character: str, set_id: int,
         """, (series, character, int(set_id), image_url, size, mime, ts))
         conn.commit()
 
-# ====== Supabase upload ======
-def public_url_for(path: str) -> str:
-    # For public buckets, this yields a stable URL
-    return f"{SUPABASE_URL}/storage/v1/object/public/{SUPABASE_BUCKET}/{path}"
+def firebase_public_url_for(blob_path: str) -> str:
+    return f"https://storage.googleapis.com/{FIREBASE_BUCKET}/{blob_path}"
 
-def ensure_bucket_exists(supa: Client, bucket: str, public: bool = True):
-    # Try to fetch; if not found, create via API (recommended approach). :contentReference[oaicite:2]{index=2}
-    try:
-        _ = supa.storage.get_bucket(bucket)
-        print(f"[BUCKET] Using existing bucket '{bucket}'")
-    except Exception:
-        print(f"[BUCKET] Creating bucket '{bucket}' (public={public})")
-        # supabase-py v2 signature uses options dict
-        supa.storage.create_bucket(bucket, options={"public": public})
-        print(f"[BUCKET] Created '{bucket}'")
-
-def upload_one_image_to_supabase(supa: Client, local_path: pathlib.Path,
-                                 dest_path: str, content_type: str = "image/png") -> tuple[str, int, str]:
+def upload_one_image_to_firebase(local_path: pathlib.Path,
+                                 dest_path: str,
+                                 content_type: str = "image/png") -> tuple[str, int, str]:
+    bkt = firebase_bucket()
+    blob = bkt.blob(dest_path)
     data = local_path.read_bytes()
     size = len(data)
-    # upsert=True so reruns replace the same object
-    supa.storage.from_(SUPABASE_BUCKET).upload(
-        dest_path, data, file_options={"contentType": content_type, "upsert": "true"}
-    )
-    url = public_url_for(dest_path)
+    blob.upload_from_filename(str(local_path), content_type=content_type)
+    try:
+        blob.make_public()
+        url = blob.public_url
+    except Exception:
+        url = firebase_public_url_for(dest_path)
     return url, size, content_type
 
-def run_supabase_uploader(jobs: List[dict]) -> int:
-    require_supabase()
-    supa = supa_client()
-    ensure_bucket_exists(supa, SUPABASE_BUCKET, public=True)
+def run_firebase_uploader(jobs: List[dict]) -> int:
+    require_firebase()
+    from PIL import Image
     uploaded = 0
-
     for j in jobs:
         series = j["series"]; character = j["character"]; ed = j["edition"]; p: pathlib.Path = j["path"]
-        # Storage path: <series_slug>/<char_slug>/ed#.png
-        series_slug = slugify(series)
-        char_slug = slugify(character)
-        dest = f"{series_slug}/{char_slug}/ed{ed}.png"
-
         try:
             with Image.open(p) as im:
                 w, h = im.size
@@ -153,18 +143,18 @@ def run_supabase_uploader(jobs: List[dict]) -> int:
         except Exception as e:
             print(f"[SKIP] {p} -> {e}")
             continue
-
         try:
-            url, size, mime = upload_one_image_to_supabase(supa, p, dest, "image/png")
+            series_slug = slugify(series)
+            char_slug = slugify(character)
+            dest = f"{series_slug}/{char_slug}/ed{ed}.png"
+            url, size, mime = upload_one_image_to_firebase(p, dest, "image/png")
             print(f"  [OK] {url}")
             upsert_character_image(series, character, ed, url, size, mime)
             uploaded += 1
         except Exception as e:
             print(f"  [ERR] upload failed -> {e}")
-
     return uploaded
 
-# ====== Optional shell runner (unchanged) ======
 def run_shell(commands):
     for cmd in commands:
         try:
@@ -179,7 +169,7 @@ def run_shell(commands):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--apply", choices=["print","shell","supabase"], default="print")
+    ap.add_argument("--apply", choices=["print","shell","firebase"], default="print")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--series", help="only this series name (case-insensitive)")
     ap.add_argument("--character", help="only this character name (case-insensitive)")
@@ -211,19 +201,15 @@ def main():
         run_shell(cmds)
         return
 
-    if args.apply == "supabase":
+    if args.apply == "firebase":
         ensure_db()
         db_abs = DB_PATH.resolve()
         print(f"[DB] Using {db_abs}")
-
         with sqlite3.connect(DB_PATH) as conn:
             before_cnt = conn.execute("SELECT COUNT(*) FROM character_images").fetchone()[0]
-
-        wrote = run_supabase_uploader(jobs)
-
+        wrote = run_firebase_uploader(jobs)
         with sqlite3.connect(DB_PATH) as conn:
             after_cnt = conn.execute("SELECT COUNT(*) FROM character_images").fetchone()[0]
-
         print(f"[DONE] Upserted {wrote} rows into {db_abs}")
         print(f"[COUNT] character_images: {before_cnt} -> {after_cnt}")
         return

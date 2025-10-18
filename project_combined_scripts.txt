@@ -2629,8 +2629,7 @@ from typing import List, Tuple
 import discord
 from discord import app_commands
 from discord.ext import commands
-import io, os, re
-from discord.ext import commands
+import io
 
 from ..card_render import render_card_image
 
@@ -2649,11 +2648,6 @@ from ..views import (
     UpgradeView,
     EditionLookupView,
 )
-
-def self_or_manage_guild():
-    async def predicate(ctx: commands.Context):
-        return ctx.author.id == ctx.bot.user.id or ctx.author.guild_permissions.manage_guild
-    return commands.check(predicate)
 
 async def _render_attachment(bot, card):
     url = await bot.db.get_character_image(card["series"], card["character"], int(card["set_id"]))
@@ -2763,15 +2757,13 @@ class InventoryCog(commands.Cog):
         await ctx.send(embed=view.build_embed(), view=view)
 
     @commands.command(name="imgset", aliases=["mimgset"])
-    @self_or_manage_guild()
+    @commands.has_permissions(manage_guild=True)
     async def cmd_imgset(self, ctx, edition: int, *, query: str):
         parts = [p.strip() for p in query.split("|")]
-        if len(parts) < 2 or len(parts) > 3:
-            return await ctx.send("Format: `mimgset <edition> Series | Character` or `mimgset <edition> Series | Character | <url-or-file>`")
+        if len(parts) != 2:
+            return await ctx.send("Format: `mimgset <edition> Series | Character`")
 
-        series, character = parts[0], parts[1]
-        src = parts[2] if len(parts) == 3 else None
-
+        series, character = parts
         url = None
         size = None
         mime = None
@@ -2781,37 +2773,9 @@ class InventoryCog(commands.Cog):
             url = a.url
             size = a.size
             mime = a.content_type
-        elif src:
-            low = src.lower()
-            if low.startswith("file://") or (os.name == "nt" and re.match(r"^[a-zA-Z]:[\\/]", src)) or (src.startswith("/") and os.name != "nt"):
-                path = src
-                if low.startswith("file://"):
-                    path = src.replace("file://", "", 1)
-                    if os.name == "nt" and path.startswith("/"):
-                        path = path[1:]
-                path = path.strip().strip('"')
-                if not os.path.exists(path):
-                    return await ctx.send("File not found.")
-                try:
-                    temp_msg = await ctx.send(file=discord.File(path))
-                    if not temp_msg.attachments:
-                        return await ctx.send("Upload failed.")
-                    att = temp_msg.attachments[0]
-                    url = att.url
-                    size = att.size
-                    mime = att.content_type
-                    try:
-                        await temp_msg.delete()
-                    except Exception:
-                        pass
-                except Exception as e:
-                    return await ctx.send(f"Upload error: {e}")
-            elif low.startswith("http://") or low.startswith("https://"):
-                url = src
-            else:
-                return await ctx.send("Third argument must be a `file://` path, absolute path, or http(s) URL.")
-        else:
-            return await ctx.send("Please attach an image or provide `| <url-or-file>`.")
+
+        if not url:
+            return await ctx.send("Please attach an image (520x700px, ~100–140KB).")
 
         if size and size > 200_000:
             return await ctx.send("⚠️ Keep images ≤ 200KB.")
