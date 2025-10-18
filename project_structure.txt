@@ -20,7 +20,6 @@ menami-bot/
 │   ├── embeds.py
 │   ├── helpers.py
 │   └── views.py
-├── menami.backup.db
 ├── menami.db
 ├── project_combined_scripts.txt
 ├── project_structure.txt

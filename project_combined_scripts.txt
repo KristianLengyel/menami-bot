@@ -110,6 +110,7 @@ if __name__ == "__main__":
 
 from __future__ import annotations
 import io
+import io as _io_local
 from typing import Tuple
 import aiohttp
 import os
@@ -243,9 +244,9 @@ def _hex_to_rgba(color_hex: str, alpha: int = 255) -> tuple[int,int,int,int]:
     return (r, g, b, alpha)
 
 def _outer_glow_from_frame(frame: Image.Image, cutout_rect: tuple[int,int,int,int],
-                           tmin: int = 15, tmax: int = 20, alpha_max: int = 200, color_hex: str | None = None) -> Image.Image:
+                           tmin: int = 15, tmax: int = 20, alpha_max: int = 200, color_hex: str | None = None, thickness: int | None = None,) -> Image.Image:
     a = frame.split()[3]
-    radius = random.randint(tmin, tmax)
+    radius = int(thickness) if thickness is not None else random.randint(tmin, tmax)
     pad = radius * 2
     big = Image.new("L", (a.width + 2*pad, a.height + 2*pad), 0)
     big.paste(a, (pad, pad))
@@ -277,6 +278,7 @@ async def render_card_image(
     fmt: str = "PNG",
     apply_glow: bool = False,
     glow_color_hex: str | None = None,
+    glow_thickness: int | None = None,
 ) -> bytes:
     card = Image.new("RGBA", (CARD_W, CARD_H), (0, 0, 0, 0))
     art = None
@@ -301,7 +303,7 @@ async def render_card_image(
     frame = _load_frame_for_set(set_id)
     if frame is not None:
         if apply_glow:
-            glow = _outer_glow_from_frame(frame, (x, y, w, h), 5, 12, 200, glow_color_hex)
+            glow = _outer_glow_from_frame(frame, (x, y, w, h), 5, 12, 200, glow_color_hex, thickness=glow_thickness)
             card.alpha_composite(glow)
         card.alpha_composite(frame)
     draw = ImageDraw.Draw(card)
@@ -393,6 +395,29 @@ async def render_drop_triptych(db, cards: list[dict]) -> bytes:
     canvas.save(out, format="WEBP")
     return out.getvalue()
 
+async def render_dye_preview(before_bytes: bytes, after_bytes: bytes) -> bytes:
+    left = Image.open(_io_local.BytesIO(before_bytes)).convert("RGBA")
+    right = Image.open(_io_local.BytesIO(after_bytes)).convert("RGBA")
+    h = max(left.height, right.height)
+    left = left.resize((int(left.width * (h / left.height)), h), Image.LANCZOS)
+    right = right.resize((int(right.width * (h / right.height)), h), Image.LANCZOS)
+
+    arrow_w = 64
+    arrow = Image.new("RGBA", (arrow_w, h), (0, 0, 0, 0))
+    d = ImageDraw.Draw(arrow)
+    cx = arrow_w // 2
+    d.polygon([(cx - 16, h//2 - 20), (cx - 16, h//2 + 20), (cx + 16, h//2)], fill=(200, 0, 200, 220))
+
+    pad = 16
+    out = Image.new("RGBA", (left.width + arrow_w + right.width + pad * 4, h + pad * 2), (0, 0, 0, 0))
+    x = pad
+    out.alpha_composite(left, (x, pad)); x += left.width + pad
+    out.alpha_composite(arrow, (x, pad)); x += arrow_w + pad
+    out.alpha_composite(right, (x, pad))
+
+    buf = _io_local.BytesIO()
+    out.save(buf, format="WEBP")
+    return buf.getvalue()
 
 # ===== menami\config.py =====
 
@@ -589,6 +614,15 @@ class DB:
               created_at TEXT NOT NULL
             );
                                    
+            CREATE TABLE IF NOT EXISTS card_dyes(
+                card_uid  TEXT PRIMARY KEY,
+                code      TEXT NOT NULL,
+                color_hex TEXT NOT NULL,
+                name      TEXT NOT NULL,
+                applied_at TEXT NOT NULL,
+                FOREIGN KEY(card_uid) REFERENCES cards(card_uid)
+            );
+                 
             CREATE INDEX IF NOT EXISTS idx_user_dyes_user ON user_dyes(user_id, created_at);            
             CREATE INDEX IF NOT EXISTS idx_cards_owned_by ON cards(owned_by);
             CREATE INDEX IF NOT EXISTS idx_cards_series_character ON cards(series, character);
@@ -606,6 +640,15 @@ class DB:
             INSERT OR IGNORE INTO meta(key, value) VALUES('editions_max', '5');
             INSERT OR IGNORE INTO meta(key, value) VALUES('edition_weights', '[1,2,3,5,9]');
             """)
+            # --- MIGRATIONS: add thickness columns if missing ---
+            cols_ud = {row[1] for row in await (await db.execute("PRAGMA table_info(user_dyes)")).fetchall()}
+            if "thickness" not in cols_ud:
+                await db.execute("ALTER TABLE user_dyes ADD COLUMN thickness INTEGER NOT NULL DEFAULT 8")
+
+            cols_cd = {row[1] for row in await (await db.execute("PRAGMA table_info(card_dyes)")).fetchall()}
+            if "thickness" not in cols_cd:
+                await db.execute("ALTER TABLE card_dyes ADD COLUMN thickness INTEGER NOT NULL DEFAULT 8")
+            # ----------------------------------------------------
             cols_u = {row[1] for row in await (await db.execute("PRAGMA table_info(users)")).fetchall()}
             for col in ["gems", "tickets", "dust_damaged", "dust_poor", "dust_good", "dust_excellent", "dust_mint"]:
                 if col not in cols_u:
@@ -667,23 +710,74 @@ class DB:
             await db.execute("UPDATE guild_settings SET drop_cooldown_s=? WHERE guild_id=?", (seconds, str(guild_id)))
             await db.commit()
 
-    async def create_user_dye(self, user_id: int, code: str, color_hex: str, charges: int, name: str):
+    # ---------- dyes ----------
+    async def create_user_dye(self, user_id: int, code: str, color_hex: str, charges: int, name: str, thickness: int):
         ts = _utcnow_iso()
         async with aiosqlite.connect(self.path) as db:
             await db.execute(
-                "INSERT INTO user_dyes(user_id, code, color_hex, charges, name, created_at) VALUES(?,?,?,?,?,?)",
-                (str(user_id), code, color_hex, int(charges), name, ts)
+                "INSERT INTO user_dyes(user_id, code, color_hex, charges, name, created_at, thickness) VALUES(?,?,?,?,?,?,?)",
+                (str(user_id), code, color_hex, int(charges), name, ts, int(thickness))
             )
             await db.commit()
 
-    async def list_user_dyes(self, user_id: int) -> list[tuple[str,str,int,str]]:
+    async def list_user_dyes(self, user_id: int) -> list[tuple[str,str,int,str,int]]:
         async with aiosqlite.connect(self.path) as db:
             cur = await db.execute(
-                "SELECT code, color_hex, charges, name FROM user_dyes WHERE user_id=? ORDER BY datetime(created_at) DESC",
+                "SELECT code, color_hex, charges, name, thickness FROM user_dyes WHERE user_id=? ORDER BY datetime(created_at) DESC",
                 (str(user_id),)
             )
             rows = await cur.fetchall()
-            return [(r[0], r[1], int(r[2]), r[3]) for r in rows]
+            return [(r[0], r[1], int(r[2]), r[3], int(r[4])) for r in rows]
+
+    async def get_user_dye(self, user_id: int, code: str) -> tuple[str, str, int, str, int] | None:
+        async with aiosqlite.connect(self.path) as db:
+            cur = await db.execute(
+                "SELECT code, color_hex, charges, name, thickness FROM user_dyes WHERE user_id=? AND LOWER(code)=LOWER(?)",
+                (str(user_id), code)
+            )
+            row = await cur.fetchone()
+            return (row[0], row[1], int(row[2]), row[3], int(row[4])) if row else None
+
+    async def consume_user_dye(self, user_id: int, code: str) -> bool:
+        async with aiosqlite.connect(self.path) as db:
+            cur = await db.execute(
+                "UPDATE user_dyes SET charges = charges - 1 WHERE user_id=? AND LOWER(code)=LOWER(?) AND charges > 0",
+                (str(user_id), code)
+            )
+            await db.commit()
+            return cur.rowcount == 1
+
+    async def set_card_dye(self, card_uid: str, code: str, color_hex: str, name: str, thickness: int):
+        ts = _utcnow_iso()
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("""
+                INSERT INTO card_dyes(card_uid, code, color_hex, name, applied_at, thickness)
+                VALUES(?,?,?,?,?,?)
+                ON CONFLICT(card_uid) DO UPDATE SET
+                    code=excluded.code,
+                    color_hex=excluded.color_hex,
+                    name=excluded.name,
+                    applied_at=excluded.applied_at,
+                    thickness=excluded.thickness
+            """, (card_uid, code, color_hex, name, ts, int(thickness)))
+            await db.commit()
+
+    async def get_card_dye(self, card_uid: str) -> tuple[str, str, str, str, int] | None:
+        async with aiosqlite.connect(self.path) as db:
+            cur = await db.execute("SELECT card_uid, code, color_hex, name, thickness FROM card_dyes WHERE card_uid=?", (card_uid,))
+            row = await cur.fetchone()
+            return (row[0], row[1], row[2], row[3], int(row[4])) if row else None
+
+
+    async def remove_card_dye(self, card_uid: str):
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("DELETE FROM card_dyes WHERE card_uid=?", (card_uid,))
+            await db.commit()
+
+    async def user_owns_card(self, user_id: int, card_uid: str) -> bool:
+        async with aiosqlite.connect(self.path) as db:
+            cur = await db.execute("SELECT 1 FROM cards WHERE card_uid=? AND owned_by=?", (card_uid, str(user_id)))
+            return (await cur.fetchone()) is not None
 
     # ---------- wishlist ----------
     async def wishlist_count(self, user_id: int) -> int:
@@ -2575,6 +2669,8 @@ async def setup(bot: commands.Bot):
 
 # ===== menami\cogs\dyes.py =====
 
+import io
+import random
 import discord
 from discord.ext import commands
 from menami.helpers import (
@@ -2583,33 +2679,40 @@ from menami.helpers import (
     dye_name_from_seed,
     emoji_shortcode_for_color,
 )
+from menami.card_render import render_card_image, render_dye_preview
 
 class Dyes(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.db = bot.db
 
-    @commands.command(name="dye")
-    async def cmd_dye(self, ctx: commands.Context):
+    @commands.command(name="u")
+    async def cmd_u(self, ctx: commands.Context, subcommand: str | None = None, *args):
+        if not subcommand or subcommand.lower() != "dye":
+            await ctx.reply("Usage: `mu dye` · get a new dye", mention_author=False)
+            return
+
         code = generate_dye_code()
         color_hex = random_color_hex_with_weights()
         name = dye_name_from_seed(code, color_hex)
         charges = 1
-        await self.db.create_user_dye(ctx.author.id, code, color_hex, charges, name)
+        thickness = random.randint(5, 12)
+
+        await self.db.create_user_dye(ctx.author.id, code, color_hex, charges, name, thickness)
 
         emoji = emoji_shortcode_for_color(color_hex)
         e = discord.Embed(
             title="New Dye Acquired",
-            description=f"{emoji} `{code}` · {charges} charge · {name}\n{color_hex.upper()}",
+            description=f"{emoji} `{code}` · {charges} charge · {name}\n"
+                        f"{color_hex.upper()} · thickness **{thickness}**",
             color=discord.Color.from_str(color_hex),
         )
         e.set_author(name=str(ctx.author), icon_url=getattr(ctx.author.display_avatar, "url", None))
         await ctx.reply(embed=e, mention_author=False)
 
     @commands.command(name="dyes")
-    async def cmd_dyes(self, ctx: commands.Context):
+    async def cmd_mdyes(self, ctx: commands.Context):
         rows = await self.db.list_user_dyes(ctx.author.id)
-
         title = "Dye Collection"
         header = f"Dyes owned by {ctx.author.mention}"
 
@@ -2624,10 +2727,10 @@ class Dyes(commands.Cog):
             return
 
         lines = []
-        for code, color_hex, charges, name in rows:
+        for code, color_hex, charges, name, thickness in rows:
             emoji = emoji_shortcode_for_color(color_hex)
             charges_txt = "charge" if charges == 1 else "charges"
-            lines.append(f"{emoji} `{code}` · {charges} {charges_txt} · {name}")
+            lines.append(f"{emoji} `{code}` · {charges} {charges_txt} · {name} · t={thickness}")
 
         e = discord.Embed(
             title=title,
@@ -2637,18 +2740,112 @@ class Dyes(commands.Cog):
         e.set_author(name=str(ctx.author), icon_url=getattr(ctx.author.display_avatar, "url", None))
         await ctx.reply(embed=e, mention_author=False)
 
-    @commands.command(name="u")
-    async def cmd_u(self, ctx: commands.Context, subcommand: str | None = None, *args):
-        if not subcommand:
-            await ctx.reply("Usage: `mu dye` or `mdyes`", mention_author=False)
-            return
-        sub = subcommand.lower()
-        if sub == "dye":
-            await self.cmd_dye(ctx)
-        elif sub == "dyes":
-            await self.cmd_dyes(ctx)
+    @commands.command(name="dye")
+    async def cmd_mdye(self, ctx: commands.Context, a: str, b: str):
+        uid = None
+        code = None
+
+        ca = await self.db.get_card(a)
+        if ca:
+            uid, code = a, b
         else:
-            await ctx.reply("Unknown subcommand. Try `mu dye` or `mdyes`.", mention_author=False)
+            cb = await self.db.get_card(b)
+            if cb:
+                uid, code = b, a
+
+        if uid is None:
+            await ctx.reply("Card not found.", mention_author=False)
+            return
+        if not await self.db.user_owns_card(ctx.author.id, uid):
+            await ctx.reply("You do not own this card.", mention_author=False)
+            return
+
+        dye = await self.db.get_user_dye(ctx.author.id, code)
+        if not dye:
+            await ctx.reply("Dye not found in your inventory.", mention_author=False)
+            return
+
+        _, color_hex, _, dye_name, thickness = dye
+
+        card = await self.db.get_card(uid)
+        url = await self.db.get_character_image(card["series"], card["character"], int(card["set_id"]))
+        if not url:
+            url = await self.db.get_character_image_any(card["series"], card["character"])
+
+        before = await render_card_image(
+            series=card["series"],
+            character=card["character"],
+            serial_number=int(card["serial_number"]),
+            set_id=int(card["set_id"]),
+            card_uid=card["card_uid"],
+            image_url=url,
+            fmt="PNG",
+            apply_glow=False,
+        )
+        after = await render_card_image(
+            series=card["series"],
+            character=card["character"],
+            serial_number=int(card["serial_number"]),
+            set_id=int(card["set_id"]),
+            card_uid=card["card_uid"],
+            image_url=url,
+            fmt="PNG",
+            apply_glow=True,
+            glow_color_hex=color_hex,
+            glow_thickness=thickness,
+        )
+        preview = await render_dye_preview(before, after)
+
+        class DyeView(discord.ui.View):
+            def __init__(self, cog: "Dyes"):
+                super().__init__(timeout=60)
+                self.cog = cog
+                self.result: bool | None = None
+
+            @discord.ui.button(emoji="❌", style=discord.ButtonStyle.danger)
+            async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+                if interaction.user.id != ctx.author.id:
+                    await interaction.response.send_message("Not your action.", ephemeral=True)
+                    return
+                self.result = False
+                await interaction.response.defer()
+                self.stop()
+
+            @discord.ui.button(emoji="✅", style=discord.ButtonStyle.success)
+            async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+                if interaction.user.id != ctx.author.id:
+                    await interaction.response.send_message("Not your action.", ephemeral=True)
+                    return
+                ok = await self.cog.db.consume_user_dye(ctx.author.id, code)
+                if not ok:
+                    await interaction.response.send_message("You no longer have charges for that dye.", ephemeral=True)
+                    return
+                await self.cog.db.set_card_dye(uid, code, color_hex, dye_name, thickness)
+                self.result = True
+                await interaction.response.defer()
+                self.stop()
+
+        file = discord.File(io.BytesIO(preview), filename="preview.webp")
+        e = discord.Embed(
+            title="Dye Card",
+            description=f"{ctx.author.mention}, apply **{dye_name}** (t={thickness}) to `{uid}`?",
+            color=discord.Color.blurple(),
+        )
+        e.set_image(url="attachment://preview.webp")
+        view = DyeView(self)
+        msg = await ctx.reply(embed=e, file=file, view=view, mention_author=False)
+        await view.wait()
+        if view.result is None:
+            te = discord.Embed(title="Dye Card", description="Timed out.", color=discord.Color.dark_grey())
+            await msg.edit(embed=te, attachments=[], view=None)
+            return
+        if view.result is False:
+            ce = discord.Embed(title="Dye Card", description="Canceled.", color=discord.Color.red())
+            await msg.edit(embed=ce, attachments=[], view=None)
+            return
+        de = discord.Embed(title="Dye Card", description="The card has been dyed!", color=discord.Color.green())
+        de.set_image(url="attachment://preview.webp")
+        await msg.edit(embed=de, view=None)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Dyes(bot))
