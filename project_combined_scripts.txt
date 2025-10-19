@@ -116,7 +116,8 @@ import aiohttp
 import os
 import random
 import colorsys
-from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageChops
+from functools import lru_cache
+from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageChops, ImageOps, ImageColor
 
 CARD_W, CARD_H = 274, 405
 CUT_W, CUT_H = 211, 314
@@ -164,8 +165,22 @@ def _text_boxes_for_set(set_id: int) -> tuple[
 def _cutout_for_set(set_id: int) -> tuple[int, int, int, int]:
     return FRAME_CUTOUTS.get(int(set_id), ((CARD_W - CUT_W) // 2, (CARD_H - CUT_H) // 2, CUT_W, CUT_H))
 
+@lru_cache(maxsize=32)
 def _load_frame_for_set(set_id: int) -> Image.Image | None:
     path = os.path.join(FRAME_DIR, f"{int(set_id)}.png")
+    if not os.path.exists(path):
+        return None
+    try:
+        im = Image.open(path).convert("RGBA")
+        if im.size != (CARD_W, CARD_H):
+            im = im.resize((CARD_W, CARD_H), Image.LANCZOS)
+        return im
+    except Exception:
+        return None
+
+@lru_cache(maxsize=32)
+def _load_mask_for_set(set_id: int) -> Image.Image | None:
+    path = os.path.join(FRAME_DIR, f"{int(set_id)}_mask.png")
     if not os.path.exists(path):
         return None
     try:
@@ -243,8 +258,10 @@ def _hex_to_rgba(color_hex: str, alpha: int = 255) -> tuple[int,int,int,int]:
     b = int(h[4:6], 16)
     return (r, g, b, alpha)
 
+# --- RESTORED: perimeter glow that hugs the outer frame and ignores the art cutout
 def _outer_glow_from_frame(frame: Image.Image, cutout_rect: tuple[int,int,int,int],
-                           tmin: int = 15, tmax: int = 20, alpha_max: int = 200, color_hex: str | None = None, thickness: int | None = None,) -> Image.Image:
+                           tmin: int = 15, tmax: int = 20, alpha_max: int = 200,
+                           color_hex: str | None = None, thickness: int | None = None) -> Image.Image:
     a = frame.split()[3]
     radius = int(thickness) if thickness is not None else random.randint(tmin, tmax)
     pad = radius * 2
@@ -252,21 +269,105 @@ def _outer_glow_from_frame(frame: Image.Image, cutout_rect: tuple[int,int,int,in
     big.paste(a, (pad, pad))
     big_blur = big.filter(ImageFilter.GaussianBlur(radius))
     blur = big_blur.crop((pad, pad, pad + a.width, pad + a.height))
+    # subtract the frame’s own alpha so the glow sits *outside*
     outer = ImageChops.subtract(blur, a)
+
+    # remove the inner art window from the glow
     x, y, w, h = cutout_rect
     outside_mask = Image.new("L", a.size, 255)
-    ImageDraw.Draw(outside_mask).rectangle([x, y, x+w, y+h], fill=0)
+    ImageDraw.Draw(outside_mask).rectangle([x, y, x + w, y + h], fill=0)
     outer = ImageChops.multiply(outer, outside_mask)
+
+    # boost & cap
     outer = outer.point(lambda p: min(255, int(p * 1.8)))
     if alpha_max < 255:
         outer = ImageChops.multiply(outer, Image.new("L", outer.size, alpha_max))
-    if color_hex:
-        color = _hex_to_rgba(color_hex, 255)
-    else:
-        color = _rand_rgb() + (255,)
+
+    color = _hex_to_rgba(color_hex, 255) if color_hex else (_rand_rgb() + (255,))
     glow = Image.new("RGBA", frame.size, color)
     glow.putalpha(outer)
     return glow
+# --- /RESTORED
+
+def _outer_glow_from_alpha(alpha: Image.Image, tmin: int = 15, tmax: int = 20, alpha_max: int = 200,
+                           color_hex: str | None = None, thickness: int | None = None) -> Image.Image:
+    radius = int(thickness) if thickness is not None else random.randint(tmin, tmax)
+    pad = radius * 2
+    big = Image.new("L", (alpha.width + 2*pad, alpha.height + 2*pad), 0)
+    big.paste(alpha, (pad, pad))
+    big_blur = big.filter(ImageFilter.GaussianBlur(radius))
+    blur = big_blur.crop((pad, pad, pad + alpha.width, pad + alpha.height))
+    outer = ImageChops.subtract(blur, alpha)
+    outer = outer.point(lambda p: min(255, int(p * 1.8)))
+    if alpha_max < 255:
+        outer = ImageChops.multiply(outer, Image.new("L", outer.size, alpha_max))
+    color = _hex_to_rgba(color_hex, 255) if color_hex else (_rand_rgb() + (255,))
+    glow = Image.new("RGBA", alpha.size, color)
+    glow.putalpha(outer)
+    return glow
+
+def _hex_to_rgb_tuple(hx: str) -> tuple[int,int,int]:
+    hx = hx.lstrip("#")
+    return int(hx[0:2],16), int(hx[2:4],16), int(hx[4:6],16)
+
+def _rgb_to_hsv_tuple(r:int,g:int,b:int) -> tuple[float,float,float]:
+    rf, gf, bf = r/255.0, g/255.0, b/255.0
+    return colorsys.rgb_to_hsv(rf, gf, bf)
+
+def _is_pearl_like(color_hex: str) -> bool:
+    r,g,b = _hex_to_rgb_tuple(color_hex)
+    _, s, v = _rgb_to_hsv_tuple(r,g,b)
+    return (v >= 0.92 and s <= 0.20) or (r >= 245 and g >= 245 and b >= 245)
+
+def _mask_select_alpha(mask_img: Image.Image) -> Image.Image:
+    if mask_img.mode != "RGBA":
+        mask_img = mask_img.convert("RGBA")
+    a = mask_img.split()[-1]
+    if a.getextrema() != (0, 0):
+        sel = a
+    else:
+        lum = mask_img.convert("L")
+        mean = sum(lum.getdata()) / (lum.width * lum.height)
+        sel = lum if mean > 127 else ImageOps.invert(lum)
+    sel = sel.filter(ImageFilter.GaussianBlur(0.6))
+    sel = sel.point(lambda p: 255 if p > 12 else 0)
+    return sel
+
+def _colorize_like_token(base_rgba: Image.Image, region_alpha: Image.Image, color_hex: str, thickness: int | None) -> Image.Image:
+    gray = ImageOps.grayscale(base_rgba)
+    if _is_pearl_like(color_hex):
+        base_white = ImageOps.colorize(gray, black=(205,208,212), white=(255,255,255)).convert("RGBA")
+        base_white.putalpha(base_rgba.split()[-1])
+        high_mask = gray.point(lambda p: max(0, min(255, int((p - 180) * 2.2))))
+        mid_mask  = gray.point(lambda p: max(0, min(255, int((p - 120) * 1.2))))
+        warm = random.choice(["#FFE9C8", "#FFD8B0", "#FFE2D9"])
+        cool = random.choice(["#D8C7FF", "#CFF6F6", "#E2F0FF"])
+        warm_layer = Image.new("RGBA", base_rgba.size, (*ImageColor.getrgb(warm), 255))
+        cool_layer = Image.new("RGBA", base_rgba.size, (*ImageColor.getrgb(cool), 255))
+        high_mask = high_mask.filter(ImageFilter.GaussianBlur(0.8))
+        mid_mask  = mid_mask.filter(ImageFilter.GaussianBlur(0.8))
+        high_mask = ImageChops.multiply(high_mask, Image.new("L", high_mask.size, 140))
+        mid_mask  = ImageChops.multiply(mid_mask,  Image.new("L", mid_mask.size, 110))
+        warm_layer.putalpha(mid_mask)
+        cool_layer.putalpha(high_mask)
+        tinted = Image.new("RGBA", base_rgba.size, (0,0,0,0))
+        tinted.alpha_composite(base_white)
+        tinted.alpha_composite(warm_layer)
+        tinted.alpha_composite(cool_layer)
+    else:
+        c = ImageColor.getcolor(color_hex, "RGB")
+        low = tuple(int(v * 0.15) for v in c)
+        tinted = ImageOps.colorize(gray, black=low, white=c).convert("RGBA")
+        tinted.putalpha(base_rgba.split()[-1])
+    out = base_rgba.copy()
+    mask = ImageChops.multiply(region_alpha, base_rgba.split()[-1])
+    out.paste(tinted, (0, 0), mask)
+    return out
+
+def _tint_frame_with_mask(frame: Image.Image, mask_img: Image.Image, color_hex: str, thickness: int | None) -> tuple[Image.Image, Image.Image]:
+    region_alpha = _mask_select_alpha(mask_img)
+    tinted_frame = _colorize_like_token(frame, region_alpha, color_hex, thickness)
+    return tinted_frame, region_alpha
 
 async def render_card_image(
     series: str,
@@ -300,12 +401,27 @@ async def render_card_image(
     cy = (art.height - h) // 2
     art = art.crop((cx, cy, cx + w, cy + h))
     card.alpha_composite(art, (x, y))
+
     frame = _load_frame_for_set(set_id)
     if frame is not None:
+        # 1) Classic perimeter glow around frame edges (inner window excluded)
         if apply_glow:
-            glow = _outer_glow_from_frame(frame, (x, y, w, h), 5, 12, 200, glow_color_hex, thickness=glow_thickness)
-            card.alpha_composite(glow)
+            edge_glow = _outer_glow_from_frame(
+                frame, (x, y, w, h),
+                5, 12, 200,
+                glow_color_hex, thickness=glow_thickness
+            )
+            card.alpha_composite(edge_glow)
+
+        # 2) Tint the frame pixels where mask selects
+        if apply_glow and glow_color_hex:
+            tint_mask = _load_mask_for_set(set_id)
+            if tint_mask is not None:
+                frame, _ = _tint_frame_with_mask(frame, tint_mask, glow_color_hex, glow_thickness)
+
+        # 3) Composite the (possibly tinted) frame
         card.alpha_composite(frame)
+
     draw = ImageDraw.Draw(card)
     BLACK = (0, 0, 0, 255)
     YELLOW = (255, 215, 64, 255)
@@ -401,23 +517,63 @@ async def render_dye_preview(before_bytes: bytes, after_bytes: bytes) -> bytes:
     h = max(left.height, right.height)
     left = left.resize((int(left.width * (h / left.height)), h), Image.LANCZOS)
     right = right.resize((int(right.width * (h / right.height)), h), Image.LANCZOS)
-
     arrow_w = 64
     arrow = Image.new("RGBA", (arrow_w, h), (0, 0, 0, 0))
     d = ImageDraw.Draw(arrow)
     cx = arrow_w // 2
     d.polygon([(cx - 16, h//2 - 20), (cx - 16, h//2 + 20), (cx + 16, h//2)], fill=(200, 0, 200, 220))
-
     pad = 16
     out = Image.new("RGBA", (left.width + arrow_w + right.width + pad * 4, h + pad * 2), (0, 0, 0, 0))
     x = pad
     out.alpha_composite(left, (x, pad)); x += left.width + pad
     out.alpha_composite(arrow, (x, pad)); x += arrow_w + pad
     out.alpha_composite(right, (x, pad))
-
     buf = _io_local.BytesIO()
     out.save(buf, format="WEBP")
     return buf.getvalue()
+
+def render_dye_token(color_hex: str, thickness: int, base_path: str = "assets/dyes/dye_base.png", fmt: str = "PNG") -> bytes:
+    base = Image.open(base_path).convert("RGBA")
+    alpha = base.split()[-1]
+    gray = base.convert("L")
+    if _is_pearl_like(color_hex):
+        undertones = ["#D8C7FF", "#CFF6F6", "#FFE9C8", "#FFD9E6", "#E2F0FF", "#F6E7FF"]
+        tone = random.choice(undertones)
+        glow_inner = _outer_glow_from_alpha(alpha, 4, 10, 180, tone, max(3, int(thickness*0.7)))
+        glow_outer = _outer_glow_from_alpha(alpha, 6, 14, 210, "#FFFFFF", max(4, int(thickness*1.15)))
+        base_white = ImageOps.colorize(gray, black=(205,208,212), white=(255,255,255)).convert("RGBA")
+        base_white.putalpha(alpha)
+        high_mask = gray.point(lambda p: max(0, min(255, int((p - 180) * 2.2))))
+        mid_mask  = gray.point(lambda p: max(0, min(255, int((p - 120) * 1.2))))
+        warm = random.choice(["#FFE9C8", "#FFD8B0", "#FFE2D9"])
+        cool = random.choice(["#D8C7FF", "#CFF6F6", "#E2F0FF"])
+        warm_layer = Image.new("RGBA", base.size, (*ImageColor.getrgb(warm), 255))
+        cool_layer = Image.new("RGBA", base.size, (*ImageColor.getrgb(cool), 255))
+        high_mask = high_mask.filter(ImageFilter.GaussianBlur(0.8))
+        mid_mask  = mid_mask.filter(ImageFilter.GaussianBlur(0.8))
+        high_mask = ImageChops.multiply(high_mask, Image.new("L", high_mask.size, 140))
+        mid_mask  = ImageChops.multiply(mid_mask,  Image.new("L", mid_mask.size, 110))
+        warm_layer.putalpha(mid_mask)
+        cool_layer.putalpha(high_mask)
+        out = Image.new("RGBA", base.size, (0,0,0,0))
+        out.alpha_composite(glow_inner)
+        out.alpha_composite(glow_outer)
+        out.alpha_composite(base_white)
+        out.alpha_composite(warm_layer)
+        out.alpha_composite(cool_layer)
+    else:
+        c = ImageColor.getcolor(color_hex, "RGB")
+        low = tuple(int(v * 0.15) for v in c)
+        tinted = ImageOps.colorize(gray, black=low, white=c).convert("RGBA")
+        tinted.putalpha(alpha)
+        glow = _outer_glow_from_alpha(alpha, 5, 12, 200, color_hex, thickness)
+        out = Image.new("RGBA", base.size, (0, 0, 0, 0))
+        out.alpha_composite(glow)
+        out.alpha_composite(tinted)
+    b = io.BytesIO()
+    out.save(b, fmt)
+    return b.getvalue()
+
 
 # ===== menami\config.py =====
 
@@ -1662,8 +1818,16 @@ import os
 import random
 import string
 import math
+import colorsys
 from datetime import datetime, timezone
 from .config import STAR_MIN, STAR_MAX, QUALITY_BY_STARS, STAR_WEIGHTS
+
+PURE_RED_P   = 0.0005
+PURE_WHITE_P = 0.00005
+PURE_BLACK_P = 0.00005
+ALMOST_PURE_P = 0.0200
+NEAR_BLACK_P  = 0.0030
+NEAR_WHITE_P  = 0.0040
 
 def gen_card_uid() -> str:
     return "".join(random.choices(string.ascii_lowercase + string.digits, k=7))
@@ -1680,13 +1844,248 @@ def iso_utc_to_text(iso_str: str) -> str:
         return dt.strftime("%B %#d, %Y %#I:%M %p")
     return dt.strftime("%B %-d, %Y %-I:%M %p")
 
+def _base36(n: int) -> str:
+    chars = "0123456789abcdefghijklmnopqrstuvwxyz"
+    if n == 0:
+        return "0"
+    s = ""
+    while n:
+        n, r = divmod(n, 36)
+        s = chars[r] + s
+    return s
+
+def generate_dye_code() -> str:
+    x = random.getrandbits(30)
+    core = _base36(x).lower()
+    core = ("vv" + core).ljust(6, "0")[:6]
+    return f"${core}"
+
+def _clamp8(x: float) -> int:
+    return max(0, min(255, int(round(x))))
+
+def _rgb_to_hex(r: float, g: float, b: float) -> str:
+    return "#{:02x}{:02x}{:02x}".format(_clamp8(r), _clamp8(g), _clamp8(b))
+
+def _hex_to_rgb(color_hex: str) -> tuple[int, int, int]:
+    hx = color_hex.lstrip("#")
+    return int(hx[0:2], 16), int(hx[2:4], 16), int(hx[4:6], 16)
+
+def _mix_hex(a: str, b: str, ratio: float) -> str:
+    ratio = max(0.0, min(1.0, float(ratio)))
+    ar, ag, ab = _hex_to_rgb(a)
+    br, bg, bb = _hex_to_rgb(b)
+    r = ar * (1 - ratio) + br * ratio
+    g = ag * (1 - ratio) + bg * ratio
+    b = ab * (1 - ratio) + bb * ratio
+    return _rgb_to_hex(r, g, b)
+
+def _hsv_to_rgb_hex(h: float, s: float, v: float) -> str:
+    i = int(h * 6.0) % 6
+    f = h * 6.0 - int(h * 6.0)
+    p = v * (1.0 - s)
+    q = v * (1.0 - f * s)
+    t = v * (1.0 - (1.0 - f) * s)
+    if i == 0:
+        r, g, b = v, t, p
+    elif i == 1:
+        r, g, b = q, v, p
+    elif i == 2:
+        r, g, b = p, v, t
+    elif i == 3:
+        r, g, b = p, q, v
+    elif i == 4:
+        r, g, b = t, p, v
+    else:
+        r, g, b = v, p, q
+    return "#{:02x}{:02x}{:02x}".format(int(r * 255), int(g * 255), int(b * 255))
+
+def _hue_of_hex(hex_):
+    r, g, b = _hex_to_rgb(hex_)
+    h, s, v = colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)
+    return h, s, v
+
+def _rand(a, b):
+    return a + (b - a) * random.random()
+
+def _sample_vivid_midtones():
+    h = _rand(0.0, 1.0)
+    s = _rand(0.6, 1.0)
+    v = _rand(0.55, 0.9)
+    return _hsv_to_rgb_hex(h, s, v)
+
+def _sample_pastels_tinted_whites():
+    h = _rand(0.0, 1.0)
+    s = _rand(0.05, 0.25)
+    v = _rand(0.92, 1.0)
+    return _hsv_to_rgb_hex(h, s, v)
+
+def _sample_deep_shadows():
+    h = _rand(0.0, 1.0)
+    s = _rand(0.0, 0.6)
+    v = _rand(0.03, 0.15)
+    return _hsv_to_rgb_hex(h, s, v)
+
+def _sample_greys_neutrals():
+    h = _rand(0.0, 1.0)
+    s = _rand(0.0, 0.06)
+    v = _rand(0.30, 0.80)
+    return _hsv_to_rgb_hex(h, s, v)
+
+def _sample_muted_all_hues():
+    h = _rand(0.0, 1.0)
+    s = _rand(0.05, 0.25)
+    v = _rand(0.40, 0.80)
+    return _hsv_to_rgb_hex(h, s, v)
+
+def _sample_earthy_tones():
+    h = _rand(0.06, 0.14)
+    s = _rand(0.15, 0.5)
+    v = _rand(0.30, 0.80)
+    return _hsv_to_rgb_hex(h, s, v)
+
+def _sample_metallic_neutrals():
+    h = _rand(0.528, 0.667)
+    s = _rand(0.05, 0.18)
+    v = _rand(0.35, 0.70)
+    return _hsv_to_rgb_hex(h, s, v)
+
+def _sample_broken_colors():
+    h = _rand(0.0, 1.0)
+    s = 0.05 + 0.55 * random.betavariate(1.2, 3.0)
+    v = 0.9 - 0.6 * s + _rand(-0.05, 0.05)
+    v = max(0.3, min(0.9, v))
+    if random.random() < 0.5:
+        h = (h + _rand(-0.03, 0.03)) % 1.0
+    return _hsv_to_rgb_hex(h, s, v)
+
+def _sample_pure_primaries():
+    choices = ["#ff0000", "#00ff00", "#0000ff", "#ffff00", "#ff00ff", "#00ffff"]
+    return random.choice(choices)
+
+def _mix_undertone(base_hex: str):
+    h, s, v = _hue_of_hex(base_hex)
+    warm_band = 0.04 <= h <= 0.18
+    undertones = [
+        ("#8B5A2B", 0.18, 0.10),
+        ("#6B7280", 0.16, 0.08),
+        ("#556B2F", 0.20, 0.10),
+        ("#7D3C98", 0.18, 0.06),
+        ("#2F6B6B", 0.16, 0.08),
+        ("#A64B2A", 0.18, 0.10),
+    ]
+    if warm_band:
+        undertones = [u for u in undertones if u[0] in ("#6B7280", "#7D3C98", "#2F6B6B")]
+    tone_hex, mix_strength, dark_hint = random.choice(undertones)
+    if warm_band:
+        mix_strength *= 0.5
+        dark_hint *= 0.3
+    mixed = _mix_hex(base_hex, tone_hex, _rand(mix_strength * 0.7, mix_strength * 1.3))
+    if random.random() < 0.9:
+        mixed = _mix_hex(mixed, "#000000", _rand(dark_hint * 0.6, dark_hint * 1.4))
+    if random.random() < 0.25:
+        mixed = _mix_hex(mixed, random.choice(["#B8860B", "#708090"]), 0.08 if not warm_band else 0.04)
+    return mixed
+
+def _sample_vivid_nuanced():
+    base = _sample_vivid_midtones()
+    if random.random() < 0.7:
+        return _mix_undertone(base)
+    if random.random() < 0.25:
+        return _mix_hex(_mix_hex(base, "#B8860B", 0.10), "#000000", 0.05)
+    return base
+
+PURITY_SNAP_P = 0.0005
+_PURE_PRIMARIES = ["#ff0000", "#00ff00", "#0000ff", "#ffff00", "#ff00ff", "#00ffff"]
+
+def _nearest_pure_primary(hex_):
+    r, g, b = _hex_to_rgb(hex_)
+    best = None
+    best_d2 = 1e9
+    for p in _PURE_PRIMARIES:
+        pr, pg, pb = _hex_to_rgb(p)
+        d2 = (r - pr) ** 2 + (g - pg) ** 2 + (b - pb) ** 2
+        if d2 < best_d2:
+            best_d2 = d2
+            best = p
+    return best
+
+def _maybe_purify(hex_):
+    h, s, v = _hue_of_hex(hex_)
+    if s >= 0.98 and v >= 0.98 and random.random() < PURITY_SNAP_P:
+        return _nearest_pure_primary(hex_)
+    return hex_
+
+def random_color_hex_with_weights() -> str:
+    r = random.random()
+    if r < PURE_RED_P:
+        return "#ff0000"
+    r -= PURE_RED_P
+    if r < PURE_WHITE_P:
+        return "#ffffff"
+    r -= PURE_WHITE_P
+    if r < PURE_BLACK_P:
+        return "#000000"
+    r -= PURE_BLACK_P
+    if r < ALMOST_PURE_P:
+        return _maybe_purify(_sample_vivid_midtones())
+    r -= ALMOST_PURE_P
+    if r < NEAR_BLACK_P:
+        return _sample_deep_shadows()
+    r -= NEAR_BLACK_P
+    if r < NEAR_WHITE_P:
+        return _sample_pastels_tinted_whites()
+    r -= NEAR_WHITE_P
+    return _maybe_purify(_sample_vivid_nuanced())
+
+_ADJ = ["Mystic","Lovely","Euphoric","Barbarian","Azure","Crimson","Ivory","Obsidian","Wizard","Romantic","Vice","Celestial","Neon","Frosted","Dusky","Radiant","Velvet","Phantom","Atomic","Retro"]
+_NOUN = ["Petal","Plush","Delight","Flesh","Atoll","Blue","City","Eclipse","Glow","Dream","Ember","Whisper","Charm","Mirage","Pulse","Velour","Dawn","Twilight","Storm","Bloom"]
+
+def dye_name_from_seed(code: str, color_hex: str) -> str:
+    seed = sum(ord(c) for c in (code + color_hex))
+    a = _ADJ[seed % len(_ADJ)]
+    b = _NOUN[(seed // 7) % len(_NOUN)]
+    c = _NOUN[(seed // 37) % len(_NOUN)]
+    if b == c:
+        c = _ADJ[(seed // 11) % len(_ADJ)]
+    return f"{a} {b} {c}"
+
+def circle_name_for_color(color_hex: str) -> str:
+    r, g, b = _hex_to_rgb(color_hex)
+    v = max(r, g, b) / 255.0
+    s = 0 if v == 0 else 1 - (min(r, g, b) / 255.0) / v
+    if v <= 0.12:
+        return "black"
+    if v >= 0.92 and s <= 0.15:
+        return "white"
+    num = (g - b) * 0.8660254037844386
+    den = 2 * r - g - b
+    hue = math.atan2(num, den)
+    hue = (hue + 2 * math.pi) % (2 * math.pi)
+    h = hue / (2 * math.pi)
+    if 0.04 <= h < 0.14 and v < 0.65 and s > 0.5:
+        return "brown"
+    if h < 1/12 or h >= 11/12:
+        return "red"
+    if h < 3/12:
+        return "orange"
+    if h < 5/12:
+        return "yellow"
+    if h < 7/12:
+        return "green"
+    if h < 9/12:
+        return "blue"
+    return "purple"
+
+def emoji_shortcode_for_color(color_hex: str) -> str:
+    name = circle_name_for_color(color_hex)
+    return f":{name}_circle:"
+
 async def choose_edition(db) -> int:
     n, weights = await db.get_editions_config()
     editions = list(range(1, n + 1))
     return random.choices(editions, weights=weights, k=1)[0]
 
 async def make_single_card_payload(db, invoker_id: int, guild_id: int) -> dict:
-    from .config import STAR_MIN, STAR_MAX, STAR_WEIGHTS, QUALITY_BY_STARS
     set_id = await choose_edition(db)
     sc = await db.random_series_character()
     if not sc:
@@ -1714,103 +2113,6 @@ async def make_single_card_payload(db, invoker_id: int, guild_id: int) -> dict:
         "dropped_in_server": str(guild_id),
         "dropped_by": str(invoker_id),
     }
-
-def _base36(n: int) -> str:
-    chars = "0123456789abcdefghijklmnopqrstuvwxyz"
-    if n == 0:
-        return "0"
-    s = ""
-    while n:
-        n, r = divmod(n, 36)
-        s = chars[r] + s
-    return s
-
-def generate_dye_code() -> str:
-    x = random.getrandbits(30)
-    core = _base36(x).lower()
-    core = ("vv" + core).ljust(6, "0")[:6]
-    return f"${core}"
-
-def _hsv_to_rgb_hex(h: float, s: float, v: float) -> str:
-    i = int(h * 6.0) % 6
-    f = h * 6.0 - int(h * 6.0)
-    p = v * (1.0 - s)
-    q = v * (1.0 - f * s)
-    t = v * (1.0 - (1.0 - f) * s)
-    if i == 0:
-        r, g, b = v, t, p
-    elif i == 1:
-        r, g, b = q, v, p
-    elif i == 2:
-        r, g, b = p, v, t
-    elif i == 3:
-        r, g, b = p, q, v
-    elif i == 4:
-        r, g, b = t, p, v
-    else:
-        r, g, b = v, p, q
-    return "#{:02x}{:02x}{:02x}".format(int(r * 255), int(g * 255), int(b * 255))
-
-def random_color_hex_with_weights() -> str:
-    r = random.random()
-    if r < 0.006:
-        return "#ff0000"
-    if r < 0.010:
-        return "#ffffff"
-    if r < 0.014:
-        return "#000000"
-    h = random.random()
-    s = 0.55 + random.random() * 0.4
-    v = 0.6 + random.random() * 0.35
-    return _hsv_to_rgb_hex(h, s, v)
-
-_ADJ = ["Mystic","Lovely","Euphoric","Barbarian","Azure","Crimson","Ivory","Obsidian","Wizard","Romantic","Vice","Celestial","Neon","Frosted","Dusky","Radiant","Velvet","Phantom","Atomic","Retro"]
-_NOUN = ["Petal","Plush","Delight","Flesh","Atoll","Blue","City","Eclipse","Glow","Dream","Ember","Whisper","Charm","Mirage","Pulse","Velour","Dawn","Twilight","Storm","Bloom"]
-
-def dye_name_from_seed(code: str, color_hex: str) -> str:
-    seed = sum(ord(c) for c in (code + color_hex))
-    a = _ADJ[seed % len(_ADJ)]
-    b = _NOUN[(seed // 7) % len(_NOUN)]
-    c = _NOUN[(seed // 37) % len(_NOUN)]
-    if b == c:
-        c = _ADJ[(seed // 11) % len(_ADJ)]
-    return f"{a} {b} {c}"
-
-def _hex_to_rgb(color_hex: str) -> tuple[int, int, int]:
-    hx = color_hex.lstrip("#")
-    return int(hx[0:2], 16), int(hx[2:4], 16), int(hx[4:6], 16)
-
-def circle_name_for_color(color_hex: str) -> str:
-    r, g, b = _hex_to_rgb(color_hex)
-    if r < 28 and g < 28 and b < 28:
-        return "black"
-    if r > 227 and g > 227 and b > 227:
-        return "white"
-    num = (g - b) * 0.8660254037844386
-    den = 2 * r - g - b
-    hue = math.atan2(num, den)
-    hue = (hue + 2 * math.pi) % (2 * math.pi)
-    h = hue / (2 * math.pi)
-    v = max(r, g, b) / 255.0
-    s = 0 if v == 0 else 1 - (min(r, g, b) / 255.0) / v
-    if 0.04 <= h < 0.14:
-        if v < 0.65 and s > 0.5:
-            return "brown"
-    if h < 1/12 or h >= 11/12:
-        return "red"
-    if h < 3/12:
-        return "orange"
-    if h < 5/12:
-        return "yellow"
-    if h < 7/12:
-        return "green"
-    if h < 9/12:
-        return "blue"
-    return "purple"
-
-def emoji_shortcode_for_color(color_hex: str) -> str:
-    name = circle_name_for_color(color_hex)
-    return f":{name}_circle:"
 
 
 # ===== menami\views.py =====
@@ -2670,7 +2972,10 @@ async def setup(bot: commands.Bot):
 # ===== menami\cogs\dyes.py =====
 
 import io
+import asyncio
+import math
 import random
+from collections import Counter
 import discord
 from discord.ext import commands
 from menami.helpers import (
@@ -2679,7 +2984,9 @@ from menami.helpers import (
     dye_name_from_seed,
     emoji_shortcode_for_color,
 )
-from menami.card_render import render_card_image, render_dye_preview
+from menami.card_render import render_card_image, render_dye_preview, render_dye_token
+
+DYE_BASE_PATH = "assets/dyes/dye_base.png"
 
 class Dyes(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -2688,34 +2995,120 @@ class Dyes(commands.Cog):
 
     @commands.command(name="u")
     async def cmd_u(self, ctx: commands.Context, subcommand: str | None = None, *args):
-        if not subcommand or subcommand.lower() != "dye":
-            await ctx.reply("Usage: `mu dye` · get a new dye", mention_author=False)
+        if subcommand is None:
+            subcommand = "dye"
+
+        if subcommand.lower() == "dye":
+            code = generate_dye_code()
+            color_hex = random_color_hex_with_weights()
+            name = dye_name_from_seed(code, color_hex)
+            charges = 1
+            thickness = random.randint(5, 12)
+            await self.db.create_user_dye(ctx.author.id, code, color_hex, charges, name, thickness)
+            emoji = emoji_shortcode_for_color(color_hex)
+
+            e = discord.Embed(
+                title="Dye Obtained",
+                description=(
+                    f"**{name}**\n"
+                    f"Owner: {ctx.author.mention}\n"
+                    f"Code: `{code}`\n"
+                    f"Color: `{color_hex.upper()}`\n"
+                    f"Glow: **{thickness}**\n"
+                    f"Charges: **{charges}**"
+                ),
+                color=discord.Color.from_str(color_hex),
+            )
+
+            icon_bytes = await asyncio.to_thread(render_dye_token, color_hex, thickness, DYE_BASE_PATH, "PNG")
+            icon_file = discord.File(io.BytesIO(icon_bytes), filename="dye.png")
+            e.set_thumbnail(url="attachment://dye.png")
+
+            await ctx.reply(embed=e, file=icon_file, mention_author=False)
             return
 
-        code = generate_dye_code()
-        color_hex = random_color_hex_with_weights()
-        name = dye_name_from_seed(code, color_hex)
-        charges = 1
-        thickness = random.randint(5, 12)
+        if subcommand.lower() == "auto_dye":
+            if not await self.bot.is_owner(ctx.author):
+                await ctx.reply("Only the bot owner can use `mu auto_dye`.", mention_author=False)
+                return
 
-        await self.db.create_user_dye(ctx.author.id, code, color_hex, charges, name, thickness)
+            times = 500
+            delay = 1.0
+            silent = True
+            if len(args) >= 1:
+                try:
+                    times = max(1, min(int(args[0]), 5000))
+                except:
+                    pass
+            if len(args) >= 2:
+                try:
+                    delay = max(0.1, float(args[1]))
+                except:
+                    pass
+            if len(args) >= 3:
+                silent = str(args[2]).lower() in ("1", "true", "t", "yes", "y")
 
-        emoji = emoji_shortcode_for_color(color_hex)
-        e = discord.Embed(
-            title="New Dye Acquired",
-            description=f"{emoji} `{code}` · {charges} charge · {name}\n"
-                        f"{color_hex.upper()} · thickness **{thickness}**",
-            color=discord.Color.from_str(color_hex),
-        )
-        e.set_author(name=str(ctx.author), icon_url=getattr(ctx.author.display_avatar, "url", None))
-        await ctx.reply(embed=e, mention_author=False)
+            if not silent:
+                await ctx.reply(f"Starting {times} × `mu dye` (every {delay:.2f}s)...", mention_author=False)
+                for i in range(times):
+                    try:
+                        await self.cmd_u.callback(self, ctx, "dye")
+                    except Exception as e:
+                        await ctx.send(f"Error on run {i+1}: {e}")
+                    await asyncio.sleep(delay)
+                await ctx.send(f"✅ Done. Generated {times} dyes.")
+                return
+
+            await ctx.reply(f"Starting silent generation: {times} dyes (every {delay:.2f}s)...", mention_author=False)
+            counts = Counter()
+            failures = 0
+            for i in range(times):
+                try:
+                    code = generate_dye_code()
+                    color_hex = random_color_hex_with_weights()
+                    name = dye_name_from_seed(code, color_hex)
+                    charges = 1
+                    thickness = random.randint(5, 12)
+                    await self.db.create_user_dye(ctx.author.id, code, color_hex, charges, name, thickness)
+                    counts[emoji_shortcode_for_color(color_hex)] += 1
+                except Exception as e:
+                    failures += 1
+                    if (i % 25) == 0:
+                        await ctx.send(f"Error at {i+1}: {e}")
+                await asyncio.sleep(delay)
+                if (i + 1) % 50 == 0:
+                    top = ", ".join(f"{k}×{v}" for k, v in counts.most_common(6))
+                    await ctx.send(f"Progress {i+1}/{times}… {top}")
+            total = sum(counts.values())
+            top = ", ".join(f"{k}×{v}" for k, v in counts.most_common(10)) or "—"
+            e = discord.Embed(
+                title="Auto Dye (silent) — Summary",
+                description=(
+                    f"User: {ctx.author.mention}\n"
+                    f"Generated: **{total}** dyes\n"
+                    f"Failures: **{failures}**\n\n"
+                    f"Top buckets: {top}"
+                ),
+                color=discord.Color.green(),
+            )
+            e.set_author(name=str(ctx.author), icon_url=getattr(ctx.author.display_avatar, "url", None))
+            await ctx.send(embed=e)
+            return
+
+        await ctx.reply("Usage:\n`mu dye`\n`mu auto_dye <times> <delay> <silent>`", mention_author=False)
+
+    @cmd_u.error
+    async def cmd_u_error(self, ctx: commands.Context, error: Exception):
+        if isinstance(error, commands.NotOwner):
+            await ctx.reply("Only the bot owner can run that.", mention_author=False, delete_after=6)
+        else:
+            raise error
 
     @commands.command(name="dyes")
     async def cmd_mdyes(self, ctx: commands.Context):
         rows = await self.db.list_user_dyes(ctx.author.id)
         title = "Dye Collection"
         header = f"Dyes owned by {ctx.author.mention}"
-
         if not rows:
             e = discord.Embed(
                 title=title,
@@ -2725,26 +3118,90 @@ class Dyes(commands.Cog):
             e.set_author(name=str(ctx.author), icon_url=getattr(ctx.author.display_avatar, "url", None))
             await ctx.reply(embed=e, mention_author=False)
             return
-
-        lines = []
-        for code, color_hex, charges, name, thickness in rows:
-            emoji = emoji_shortcode_for_color(color_hex)
-            charges_txt = "charge" if charges == 1 else "charges"
-            lines.append(f"{emoji} `{code}` · {charges} {charges_txt} · {name} · t={thickness}")
-
-        e = discord.Embed(
-            title=title,
-            description=header + "\n\n" + "\n".join(lines),
-            color=discord.Color.blurple(),
-        )
-        e.set_author(name=str(ctx.author), icon_url=getattr(ctx.author.display_avatar, "url", None))
-        await ctx.reply(embed=e, mention_author=False)
+        page_size = 10
+        total_pages = max(1, math.ceil(len(rows) / page_size))
+        def page_embed(page: int) -> discord.Embed:
+            start = page * page_size
+            end = start + page_size
+            subset = rows[start:end]
+            lines = []
+            for code, color_hex, charges, name, thickness in subset:
+                emoji = emoji_shortcode_for_color(color_hex)
+                charges_txt = "charge" if charges == 1 else "charges"
+                lines.append(f"{emoji} `{code}` · {charges} {charges_txt} · {name} · t={thickness}")
+            desc = header + "\n\n" + ("\n".join(lines) if lines else "_No dyes on this page._")
+            e = discord.Embed(title=title, description=desc, color=discord.Color.blurple())
+            e.set_author(name=str(ctx.author), icon_url=getattr(ctx.author.display_avatar, "url", None))
+            e.set_footer(text=f"Page {page + 1}/{total_pages} • {len(rows)} total")
+            return e
+        class DyesPager(discord.ui.View):
+            def __init__(self, author_id: int):
+                super().__init__(timeout=120)
+                self.author_id = author_id
+                self.page = 0
+                self.msg: discord.Message | None = None
+                self.update_buttons()
+            def update_buttons(self):
+                for child in self.children:
+                    if isinstance(child, discord.ui.Button):
+                        if child.custom_id == "first":
+                            child.disabled = self.page <= 0
+                        elif child.custom_id == "prev":
+                            child.disabled = self.page <= 0
+                        elif child.custom_id == "next":
+                            child.disabled = self.page >= total_pages - 1
+                        elif child.custom_id == "last":
+                            child.disabled = self.page >= total_pages - 1
+            async def interaction_guard(self, interaction: discord.Interaction) -> bool:
+                if interaction.user.id != self.author_id:
+                    await interaction.response.send_message("Not your list.", ephemeral=True)
+                    return False
+                return True
+            @discord.ui.button(emoji="⏮️", style=discord.ButtonStyle.secondary, custom_id="first")
+            async def first_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
+                if not await self.interaction_guard(interaction):
+                    return
+                self.page = 0
+                self.update_buttons()
+                await interaction.response.edit_message(embed=page_embed(self.page), view=self)
+            @discord.ui.button(emoji="◀️", style=discord.ButtonStyle.secondary, custom_id="prev")
+            async def prev_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
+                if not await self.interaction_guard(interaction):
+                    return
+                if self.page > 0:
+                    self.page -= 1
+                self.update_buttons()
+                await interaction.response.edit_message(embed=page_embed(self.page), view=self)
+            @discord.ui.button(emoji="▶️", style=discord.ButtonStyle.secondary, custom_id="next")
+            async def next_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
+                if not await self.interaction_guard(interaction):
+                    return
+                if self.page < total_pages - 1:
+                    self.page += 1
+                self.update_buttons()
+                await interaction.response.edit_message(embed=page_embed(self.page), view=self)
+            @discord.ui.button(emoji="⏭️", style=discord.ButtonStyle.secondary, custom_id="last")
+            async def last_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
+                if not await self.interaction_guard(interaction):
+                    return
+                self.page = total_pages - 1
+                self.update_buttons()
+                await interaction.response.edit_message(embed=page_embed(self.page), view=self)
+            async def on_timeout(self):
+                try:
+                    if self.msg:
+                        await self.msg.edit(view=None)
+                except Exception:
+                    pass
+        view = DyesPager(ctx.author.id)
+        embed = page_embed(0)
+        msg = await ctx.reply(embed=embed, view=view, mention_author=False)
+        view.msg = msg
 
     @commands.command(name="dye")
     async def cmd_mdye(self, ctx: commands.Context, a: str, b: str):
         uid = None
         code = None
-
         ca = await self.db.get_card(a)
         if ca:
             uid, code = a, b
@@ -2752,26 +3209,21 @@ class Dyes(commands.Cog):
             cb = await self.db.get_card(b)
             if cb:
                 uid, code = b, a
-
         if uid is None:
             await ctx.reply("Card not found.", mention_author=False)
             return
         if not await self.db.user_owns_card(ctx.author.id, uid):
             await ctx.reply("You do not own this card.", mention_author=False)
             return
-
         dye = await self.db.get_user_dye(ctx.author.id, code)
         if not dye:
             await ctx.reply("Dye not found in your inventory.", mention_author=False)
             return
-
         _, color_hex, _, dye_name, thickness = dye
-
         card = await self.db.get_card(uid)
         url = await self.db.get_character_image(card["series"], card["character"], int(card["set_id"]))
         if not url:
             url = await self.db.get_character_image_any(card["series"], card["character"])
-
         before = await render_card_image(
             series=card["series"],
             character=card["character"],
@@ -2795,13 +3247,11 @@ class Dyes(commands.Cog):
             glow_thickness=thickness,
         )
         preview = await render_dye_preview(before, after)
-
         class DyeView(discord.ui.View):
             def __init__(self, cog: "Dyes"):
                 super().__init__(timeout=60)
                 self.cog = cog
                 self.result: bool | None = None
-
             @discord.ui.button(emoji="❌", style=discord.ButtonStyle.danger)
             async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
                 if interaction.user.id != ctx.author.id:
@@ -2810,7 +3260,6 @@ class Dyes(commands.Cog):
                 self.result = False
                 await interaction.response.defer()
                 self.stop()
-
             @discord.ui.button(emoji="✅", style=discord.ButtonStyle.success)
             async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
                 if interaction.user.id != ctx.author.id:
@@ -2824,7 +3273,6 @@ class Dyes(commands.Cog):
                 self.result = True
                 await interaction.response.defer()
                 self.stop()
-
         file = discord.File(io.BytesIO(preview), filename="preview.webp")
         e = discord.Embed(
             title="Dye Card",

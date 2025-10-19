@@ -5,6 +5,7 @@ import random
 from collections import Counter
 import discord
 from discord.ext import commands
+from PIL import Image, ImageDraw, ImageFont
 from menami.helpers import (
     generate_dye_code,
     random_color_hex_with_weights,
@@ -321,6 +322,159 @@ class Dyes(commands.Cog):
         de = discord.Embed(title="Dye Card", description="The card has been dyed!", color=discord.Color.green())
         de.set_image(url="attachment://preview.webp")
         await msg.edit(embed=de, view=None)
+
+    @commands.command(name="dyes_gallery", aliases=["dg"])
+    async def cmd_dyes_gallery(self, ctx: commands.Context, sort: str | None = None):
+        rows = await self.db.list_user_dyes(ctx.author.id)
+        if not rows:
+            e = discord.Embed(
+                title="Dye Gallery",
+                description=f"{ctx.author.mention}\nNo dyes yet. Use `mu dye` to get one.",
+                color=discord.Color.dark_grey(),
+            )
+            e.set_author(name=str(ctx.author), icon_url=getattr(ctx.author.display_avatar, "url", None))
+            await ctx.reply(embed=e, mention_author=False)
+            return
+
+        def _hue_of_hex(hx: str) -> float:
+            r = int(hx[1:3], 16) / 255.0
+            g = int(hx[3:5], 16) / 255.0
+            b = int(hx[5:7], 16) / 255.0
+            import colorsys
+            h, s, v = colorsys.rgb_to_hsv(r, g, b)
+            return h
+
+        s = (sort or "hue").lower().strip()
+        if s == "oldest":
+            rows_sorted = list(reversed(rows))
+        elif s == "charges":
+            rows_sorted = sorted(rows, key=lambda r: (-int(r[2]), r[0]))
+        elif s == "thickness":
+            rows_sorted = sorted(rows, key=lambda r: (-int(r[4]), r[0]))
+        elif s == "newest":
+            rows_sorted = rows
+        else:
+            rows_sorted = sorted(rows, key=lambda r: (_hue_of_hex(r[1]), -int(r[2])))
+
+        per_row = 8
+        tile_size = 128 if len(rows_sorted) < 200 else 104
+        page_items = 56 if tile_size <= 112 else 48
+        total_pages = max(1, math.ceil(len(rows_sorted) / page_items))
+
+        async def render_sheet(page: int) -> tuple[discord.Embed, discord.File]:
+            start = page * page_items
+            end = start + page_items
+            subset = rows_sorted[start:end]
+            pad = 16
+            cols = per_row
+            rows_cnt = max(1, math.ceil(len(subset) / cols))
+            w = pad + cols * (tile_size + pad)
+            h = pad + rows_cnt * (tile_size + 36 + pad)
+            canvas = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+
+            try:
+                f_code = ImageFont.truetype("arial.ttf", 16)
+            except Exception:
+                f_code = ImageFont.load_default()
+
+            x = pad
+            y = pad
+            for i, (code, color_hex, charges, name, thickness) in enumerate(subset):
+                token_bytes = await asyncio.to_thread(render_dye_token, color_hex, thickness, DYE_BASE_PATH, "PNG")
+                im = Image.open(io.BytesIO(token_bytes)).convert("RGBA").resize((tile_size, tile_size))
+                canvas.alpha_composite(im, (x, y))
+
+                d = ImageDraw.Draw(canvas)
+                badge_r = 10
+                cx = x + tile_size - badge_r - 8
+                cy = y + 8 + badge_r
+                if int(charges) > 0:
+                    d.ellipse((cx - badge_r, cy - badge_r, cx + badge_r, cy + badge_r), fill=(255, 255, 255, 230), outline=(0, 0, 0, 220), width=2)
+                else:
+                    d.ellipse((cx - badge_r, cy - badge_r, cx + badge_r, cy + badge_r), fill=None, outline=(255, 255, 255, 230), width=2)
+
+                tw, th = d.textbbox((0, 0), code, font=f_code)[2:]
+                tx = x + (tile_size - tw) // 2
+                ty = y + tile_size + 6
+                d.rounded_rectangle((x + 4, ty - 4, x + tile_size - 4, ty + th + 4), 6, fill=(0, 0, 0, 150))
+                d.text((tx, ty), code, font=f_code, fill=(255, 255, 255, 240))
+
+                x += tile_size + pad
+                if (i + 1) % cols == 0:
+                    x = pad
+                    y += tile_size + 36 + pad
+
+            out = io.BytesIO()
+            canvas.save(out, format="WEBP")
+            file = discord.File(io.BytesIO(out.getvalue()), filename="dyes.webp")
+
+            e = discord.Embed(
+                title="Dye Gallery",
+                description=f"{ctx.author.mention} • {len(rows_sorted)} dyes • Page {page + 1}/{total_pages}",
+                color=discord.Color.blurple(),
+            )
+            e.set_author(name=str(ctx.author), icon_url=getattr(ctx.author.display_avatar, "url", None))
+            e.set_image(url="attachment://dyes.webp")
+            return e, file
+
+        class GalleryPager(discord.ui.View):
+            def __init__(self, author_id: int):
+                super().__init__(timeout=180)
+                self.author_id = author_id
+                self.page = 0
+                self.msg: discord.Message | None = None
+
+            async def refresh(self, interaction: discord.Interaction):
+                embed, file = await render_sheet(self.page)
+                await interaction.response.edit_message(embed=embed, attachments=[file], view=self)
+
+            async def interaction_guard(self, interaction: discord.Interaction) -> bool:
+                if interaction.user.id != self.author_id:
+                    await interaction.response.send_message("Not your gallery.", ephemeral=True)
+                    return False
+                return True
+
+            @discord.ui.button(emoji="⏮️", style=discord.ButtonStyle.secondary)
+            async def first_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
+                if not await self.interaction_guard(interaction):
+                    return
+                self.page = 0
+                await self.refresh(interaction)
+
+            @discord.ui.button(emoji="◀️", style=discord.ButtonStyle.secondary)
+            async def prev_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
+                if not await self.interaction_guard(interaction):
+                    return
+                if self.page > 0:
+                    self.page -= 1
+                await self.refresh(interaction)
+
+            @discord.ui.button(emoji="▶️", style=discord.ButtonStyle.secondary)
+            async def next_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
+                if not await self.interaction_guard(interaction):
+                    return
+                if self.page < total_pages - 1:
+                    self.page += 1
+                await self.refresh(interaction)
+
+            @discord.ui.button(emoji="⏭️", style=discord.ButtonStyle.secondary)
+            async def last_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
+                if not await self.interaction_guard(interaction):
+                    return
+                self.page = total_pages - 1
+                await self.refresh(interaction)
+
+            async def on_timeout(self):
+                try:
+                    if self.msg:
+                        await self.msg.edit(view=None)
+                except Exception:
+                    pass
+
+        view = GalleryPager(ctx.author.id)
+        embed, file = await render_sheet(0)
+        sent = await ctx.reply(embed=embed, file=file, view=view, mention_author=False)
+        view.msg = sent
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Dyes(bot))

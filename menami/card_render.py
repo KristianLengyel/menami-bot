@@ -148,7 +148,6 @@ def _hex_to_rgba(color_hex: str, alpha: int = 255) -> tuple[int,int,int,int]:
     b = int(h[4:6], 16)
     return (r, g, b, alpha)
 
-# --- RESTORED: perimeter glow that hugs the outer frame and ignores the art cutout
 def _outer_glow_from_frame(frame: Image.Image, cutout_rect: tuple[int,int,int,int],
                            tmin: int = 15, tmax: int = 20, alpha_max: int = 200,
                            color_hex: str | None = None, thickness: int | None = None) -> Image.Image:
@@ -159,16 +158,13 @@ def _outer_glow_from_frame(frame: Image.Image, cutout_rect: tuple[int,int,int,in
     big.paste(a, (pad, pad))
     big_blur = big.filter(ImageFilter.GaussianBlur(radius))
     blur = big_blur.crop((pad, pad, pad + a.width, pad + a.height))
-    # subtract the frame’s own alpha so the glow sits *outside*
     outer = ImageChops.subtract(blur, a)
 
-    # remove the inner art window from the glow
     x, y, w, h = cutout_rect
     outside_mask = Image.new("L", a.size, 255)
     ImageDraw.Draw(outside_mask).rectangle([x, y, x + w, y + h], fill=0)
     outer = ImageChops.multiply(outer, outside_mask)
 
-    # boost & cap
     outer = outer.point(lambda p: min(255, int(p * 1.8)))
     if alpha_max < 255:
         outer = ImageChops.multiply(outer, Image.new("L", outer.size, alpha_max))
@@ -177,7 +173,6 @@ def _outer_glow_from_frame(frame: Image.Image, cutout_rect: tuple[int,int,int,in
     glow = Image.new("RGBA", frame.size, color)
     glow.putalpha(outer)
     return glow
-# --- /RESTORED
 
 def _outer_glow_from_alpha(alpha: Image.Image, tmin: int = 15, tmax: int = 20, alpha_max: int = 200,
                            color_hex: str | None = None, thickness: int | None = None) -> Image.Image:
@@ -294,7 +289,6 @@ async def render_card_image(
 
     frame = _load_frame_for_set(set_id)
     if frame is not None:
-        # 1) Classic perimeter glow around frame edges (inner window excluded)
         if apply_glow:
             edge_glow = _outer_glow_from_frame(
                 frame, (x, y, w, h),
@@ -303,13 +297,10 @@ async def render_card_image(
             )
             card.alpha_composite(edge_glow)
 
-        # 2) Tint the frame pixels where mask selects
         if apply_glow and glow_color_hex:
             tint_mask = _load_mask_for_set(set_id)
             if tint_mask is not None:
                 frame, _ = _tint_frame_with_mask(frame, tint_mask, glow_color_hex, glow_thickness)
-
-        # 3) Composite the (possibly tinted) frame
         card.alpha_composite(frame)
 
     draw = ImageDraw.Draw(card)
