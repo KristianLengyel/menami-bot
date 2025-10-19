@@ -3029,6 +3029,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 import io
+import os
+from firebase_admin import credentials, storage, initialize_app, get_app
 
 from ..card_render import render_card_image
 
@@ -3053,6 +3055,11 @@ async def _render_attachment(bot, card):
     if not url:
         url = await bot.db.get_character_image_any(card["series"], card["character"])
 
+    dye = await bot.db.get_card_dye(card["card_uid"])
+    apply_glow = dye is not None
+    glow_color = dye[2] if dye else None
+    glow_thickness = dye[4] if dye and len(dye) >= 5 else None
+
     img_bytes = await render_card_image(
         series=card["series"],
         character=card["character"],
@@ -3061,9 +3068,46 @@ async def _render_attachment(bot, card):
         card_uid=card["card_uid"],
         image_url=url,
         fmt="PNG",
+        apply_glow=apply_glow,
+        glow_color_hex=glow_color,
+        glow_thickness=glow_thickness,
     )
     fname = f"{card['card_uid']}.png"
     return discord.File(io.BytesIO(img_bytes), filename=fname), fname
+
+_FBASE_INIT = False
+def _firebase_bucket():
+    global _FBASE_INIT
+    if not _FBASE_INIT:
+        key_path = os.getenv("FIREBASE_KEY", "").strip()
+        bucket_name = os.getenv("FIREBASE_BUCKET", "").strip()
+        if not key_path or not bucket_name:
+            raise RuntimeError("Set FIREBASE_KEY (path to service account JSON) and FIREBASE_BUCKET env vars.")
+        try:
+            get_app()
+        except ValueError:
+            cred = credentials.Certificate(key_path)
+            initialize_app(cred, {"storageBucket": bucket_name})
+        _FBASE_INIT = True
+    return storage.bucket()
+
+def _slugify(s: str) -> str:
+    import re
+    s = s.strip().lower()
+    s = re.sub(r"[^\w\s\-\.]", "", s)
+    s = re.sub(r"\s+", "_", s)
+    return s or "item"
+
+async def _upload_bytes_to_firebase(data: bytes, dest_path: str, content_type: str = "image/png") -> tuple[str, int, str]:
+    bkt = _firebase_bucket()
+    blob = bkt.blob(dest_path)
+    blob.upload_from_string(data=data, content_type=content_type)
+    try:
+        blob.make_public()
+        url = blob.public_url
+    except Exception:
+        url = f"https://storage.googleapis.com/{bkt.name}/{dest_path}"
+    return url, len(data), content_type
 
 def parse_collection_filters(text: str) -> dict:
     f: dict = {}
@@ -3163,24 +3207,36 @@ class InventoryCog(commands.Cog):
             return await ctx.send("Format: `mimgset <edition> Series | Character`")
 
         series, character = parts
-        url = None
-        size = None
-        mime = None
 
-        if ctx.message.attachments:
-            a = ctx.message.attachments[0]
-            url = a.url
-            size = a.size
-            mime = a.content_type
+        if not ctx.message.attachments:
+            return await ctx.send("Please attach an image (≈520×700px, ≤200KB).")
 
-        if not url:
-            return await ctx.send("Please attach an image (520x700px, ~100–140KB).")
+        a = ctx.message.attachments[0]
+        try:
+            data = await a.read()
+        except Exception:
+            return await ctx.send("Couldn't read the attachment. Try again.")
 
-        if size and size > 200_000:
+        if len(data) > 200_000:
             return await ctx.send("⚠️ Keep images ≤ 200KB.")
 
-        await self.bot.db.set_character_image(series, character, int(edition), url, size, mime)
-        await ctx.send(f"✅ Image set for {character} · {series} · ◈{edition}")
+        mime = a.content_type or "image/png"
+
+        sslug = _slugify(series)
+        cslug = _slugify(character)
+        dest_path = f"{sslug}/{cslug}/ed{int(edition)}.png"
+
+        try:
+            url, size, eff_mime = await _upload_bytes_to_firebase(data, dest_path, mime)
+        except Exception as e:
+            return await ctx.send(f"Upload failed: `{e}`")
+
+        try:
+            await self.bot.db.set_character_image(series, character, int(edition), url, size, eff_mime)
+        except Exception as e:
+            return await ctx.send(f"Saved to storage, but DB update failed: `{e}`")
+
+        await ctx.send(f"✅ Image uploaded & set for **{character}** · **{series}** · ◈{edition}\n{url}")
 
     # -------- Inventory --------
     @app_commands.command(name="inventory", description="Show your items (coin, gem, ticket) with pagination.")

@@ -6,7 +6,7 @@ import aiohttp
 import os
 import random
 import colorsys
-from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageChops
+from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageChops, ImageOps, ImageColor
 
 CARD_W, CARD_H = 274, 405
 CUT_W, CUT_H = 211, 314
@@ -158,6 +158,36 @@ def _outer_glow_from_frame(frame: Image.Image, cutout_rect: tuple[int,int,int,in
     glow.putalpha(outer)
     return glow
 
+def _outer_glow_from_alpha(alpha: Image.Image, tmin: int = 15, tmax: int = 20, alpha_max: int = 200,
+                           color_hex: str | None = None, thickness: int | None = None) -> Image.Image:
+    radius = int(thickness) if thickness is not None else random.randint(tmin, tmax)
+    pad = radius * 2
+    big = Image.new("L", (alpha.width + 2*pad, alpha.height + 2*pad), 0)
+    big.paste(alpha, (pad, pad))
+    big_blur = big.filter(ImageFilter.GaussianBlur(radius))
+    blur = big_blur.crop((pad, pad, pad + alpha.width, pad + alpha.height))
+    outer = ImageChops.subtract(blur, alpha)
+    outer = outer.point(lambda p: min(255, int(p * 1.8)))
+    if alpha_max < 255:
+        outer = ImageChops.multiply(outer, Image.new("L", outer.size, alpha_max))
+    color = _hex_to_rgba(color_hex, 255) if color_hex else (_rand_rgb() + (255,))
+    glow = Image.new("RGBA", alpha.size, color)
+    glow.putalpha(outer)
+    return glow
+
+def _hex_to_rgb_tuple(hx: str) -> tuple[int,int,int]:
+    hx = hx.lstrip("#")
+    return int(hx[0:2],16), int(hx[2:4],16), int(hx[4:6],16)
+
+def _rgb_to_hsv_tuple(r:int,g:int,b:int) -> tuple[float,float,float]:
+    rf, gf, bf = r/255.0, g/255.0, b/255.0
+    return colorsys.rgb_to_hsv(rf, gf, bf)
+
+def _is_pearl_like(color_hex: str) -> bool:
+    r,g,b = _hex_to_rgb_tuple(color_hex)
+    _, s, v = _rgb_to_hsv_tuple(r,g,b)
+    return (v >= 0.92 and s <= 0.20) or (r >= 245 and g >= 245 and b >= 245)
+
 async def render_card_image(
     series: str,
     character: str,
@@ -291,20 +321,59 @@ async def render_dye_preview(before_bytes: bytes, after_bytes: bytes) -> bytes:
     h = max(left.height, right.height)
     left = left.resize((int(left.width * (h / left.height)), h), Image.LANCZOS)
     right = right.resize((int(right.width * (h / right.height)), h), Image.LANCZOS)
-
     arrow_w = 64
     arrow = Image.new("RGBA", (arrow_w, h), (0, 0, 0, 0))
     d = ImageDraw.Draw(arrow)
     cx = arrow_w // 2
     d.polygon([(cx - 16, h//2 - 20), (cx - 16, h//2 + 20), (cx + 16, h//2)], fill=(200, 0, 200, 220))
-
     pad = 16
     out = Image.new("RGBA", (left.width + arrow_w + right.width + pad * 4, h + pad * 2), (0, 0, 0, 0))
     x = pad
     out.alpha_composite(left, (x, pad)); x += left.width + pad
     out.alpha_composite(arrow, (x, pad)); x += arrow_w + pad
     out.alpha_composite(right, (x, pad))
-
     buf = _io_local.BytesIO()
     out.save(buf, format="WEBP")
     return buf.getvalue()
+
+def render_dye_token(color_hex: str, thickness: int, base_path: str = "assets/dyes/dye_base.png", fmt: str = "PNG") -> bytes:
+    base = Image.open(base_path).convert("RGBA")
+    alpha = base.split()[-1]
+    gray = base.convert("L")
+    if _is_pearl_like(color_hex):
+        undertones = ["#D8C7FF", "#CFF6F6", "#FFE9C8", "#FFD9E6", "#E2F0FF", "#F6E7FF"]
+        tone = random.choice(undertones)
+        glow_inner = _outer_glow_from_alpha(alpha, 4, 10, 180, tone, max(3, int(thickness*0.7)))
+        glow_outer = _outer_glow_from_alpha(alpha, 6, 14, 210, "#FFFFFF", max(4, int(thickness*1.15)))
+        base_white = ImageOps.colorize(gray, black=(205,208,212), white=(255,255,255)).convert("RGBA")
+        base_white.putalpha(alpha)
+        high_mask = gray.point(lambda p: max(0, min(255, int((p - 180) * 2.2))))
+        mid_mask  = gray.point(lambda p: max(0, min(255, int((p - 120) * 1.2))))
+        warm = random.choice(["#FFE9C8", "#FFD8B0", "#FFE2D9"])
+        cool = random.choice(["#D8C7FF", "#CFF6F6", "#E2F0FF"])
+        warm_layer = Image.new("RGBA", base.size, (*ImageColor.getrgb(warm), 255))
+        cool_layer = Image.new("RGBA", base.size, (*ImageColor.getrgb(cool), 255))
+        high_mask = high_mask.filter(ImageFilter.GaussianBlur(0.8))
+        mid_mask  = mid_mask.filter(ImageFilter.GaussianBlur(0.8))
+        high_mask = ImageChops.multiply(high_mask, Image.new("L", high_mask.size, 140))
+        mid_mask  = ImageChops.multiply(mid_mask,  Image.new("L", mid_mask.size, 110))
+        warm_layer.putalpha(mid_mask)
+        cool_layer.putalpha(high_mask)
+        out = Image.new("RGBA", base.size, (0,0,0,0))
+        out.alpha_composite(glow_inner)
+        out.alpha_composite(glow_outer)
+        out.alpha_composite(base_white)
+        out.alpha_composite(warm_layer)
+        out.alpha_composite(cool_layer)
+    else:
+        c = ImageColor.getcolor(color_hex, "RGB")
+        low = tuple(int(v * 0.15) for v in c)
+        tinted = ImageOps.colorize(gray, black=low, white=c).convert("RGBA")
+        tinted.putalpha(alpha)
+        glow = _outer_glow_from_alpha(alpha, 5, 12, 200, color_hex, thickness)
+        out = Image.new("RGBA", base.size, (0, 0, 0, 0))
+        out.alpha_composite(glow)
+        out.alpha_composite(tinted)
+    b = io.BytesIO()
+    out.save(b, fmt)
+    return b.getvalue()
