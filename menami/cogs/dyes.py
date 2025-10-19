@@ -34,15 +34,24 @@ class Dyes(commands.Cog):
             thickness = random.randint(5, 12)
             await self.db.create_user_dye(ctx.author.id, code, color_hex, charges, name, thickness)
             emoji = emoji_shortcode_for_color(color_hex)
+
             e = discord.Embed(
-                title="New Dye Acquired",
-                description=f"{emoji} `{code}` · {charges} charge · {name}\n{color_hex.upper()} · thickness **{thickness}**",
+                title="Dye Obtained",
+                description=(
+                    f"**{name}**\n"
+                    f"Owner: {ctx.author.mention}\n"
+                    f"Code: `{code}`\n"
+                    f"Color: `{color_hex.upper()}`\n"
+                    f"Glow: **{thickness}**\n"
+                    f"Charges: **{charges}**"
+                ),
                 color=discord.Color.from_str(color_hex),
             )
-            e.set_author(name=str(ctx.author), icon_url=getattr(ctx.author.display_avatar, "url", None))
+
             icon_bytes = await asyncio.to_thread(render_dye_token, color_hex, thickness, DYE_BASE_PATH, "PNG")
             icon_file = discord.File(io.BytesIO(icon_bytes), filename="dye.png")
             e.set_thumbnail(url="attachment://dye.png")
+
             await ctx.reply(embed=e, file=icon_file, mention_author=False)
             return
 
