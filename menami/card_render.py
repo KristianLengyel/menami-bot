@@ -6,6 +6,7 @@ import aiohttp
 import os
 import random
 import colorsys
+from functools import lru_cache
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageChops, ImageOps, ImageColor
 
 CARD_W, CARD_H = 274, 405
@@ -54,8 +55,22 @@ def _text_boxes_for_set(set_id: int) -> tuple[
 def _cutout_for_set(set_id: int) -> tuple[int, int, int, int]:
     return FRAME_CUTOUTS.get(int(set_id), ((CARD_W - CUT_W) // 2, (CARD_H - CUT_H) // 2, CUT_W, CUT_H))
 
+@lru_cache(maxsize=32)
 def _load_frame_for_set(set_id: int) -> Image.Image | None:
     path = os.path.join(FRAME_DIR, f"{int(set_id)}.png")
+    if not os.path.exists(path):
+        return None
+    try:
+        im = Image.open(path).convert("RGBA")
+        if im.size != (CARD_W, CARD_H):
+            im = im.resize((CARD_W, CARD_H), Image.LANCZOS)
+        return im
+    except Exception:
+        return None
+
+@lru_cache(maxsize=32)
+def _load_mask_for_set(set_id: int) -> Image.Image | None:
+    path = os.path.join(FRAME_DIR, f"{int(set_id)}_mask.png")
     if not os.path.exists(path):
         return None
     try:
@@ -133,8 +148,10 @@ def _hex_to_rgba(color_hex: str, alpha: int = 255) -> tuple[int,int,int,int]:
     b = int(h[4:6], 16)
     return (r, g, b, alpha)
 
+# --- RESTORED: perimeter glow that hugs the outer frame and ignores the art cutout
 def _outer_glow_from_frame(frame: Image.Image, cutout_rect: tuple[int,int,int,int],
-                           tmin: int = 15, tmax: int = 20, alpha_max: int = 200, color_hex: str | None = None, thickness: int | None = None,) -> Image.Image:
+                           tmin: int = 15, tmax: int = 20, alpha_max: int = 200,
+                           color_hex: str | None = None, thickness: int | None = None) -> Image.Image:
     a = frame.split()[3]
     radius = int(thickness) if thickness is not None else random.randint(tmin, tmax)
     pad = radius * 2
@@ -142,21 +159,25 @@ def _outer_glow_from_frame(frame: Image.Image, cutout_rect: tuple[int,int,int,in
     big.paste(a, (pad, pad))
     big_blur = big.filter(ImageFilter.GaussianBlur(radius))
     blur = big_blur.crop((pad, pad, pad + a.width, pad + a.height))
+    # subtract the frame’s own alpha so the glow sits *outside*
     outer = ImageChops.subtract(blur, a)
+
+    # remove the inner art window from the glow
     x, y, w, h = cutout_rect
     outside_mask = Image.new("L", a.size, 255)
-    ImageDraw.Draw(outside_mask).rectangle([x, y, x+w, y+h], fill=0)
+    ImageDraw.Draw(outside_mask).rectangle([x, y, x + w, y + h], fill=0)
     outer = ImageChops.multiply(outer, outside_mask)
+
+    # boost & cap
     outer = outer.point(lambda p: min(255, int(p * 1.8)))
     if alpha_max < 255:
         outer = ImageChops.multiply(outer, Image.new("L", outer.size, alpha_max))
-    if color_hex:
-        color = _hex_to_rgba(color_hex, 255)
-    else:
-        color = _rand_rgb() + (255,)
+
+    color = _hex_to_rgba(color_hex, 255) if color_hex else (_rand_rgb() + (255,))
     glow = Image.new("RGBA", frame.size, color)
     glow.putalpha(outer)
     return glow
+# --- /RESTORED
 
 def _outer_glow_from_alpha(alpha: Image.Image, tmin: int = 15, tmax: int = 20, alpha_max: int = 200,
                            color_hex: str | None = None, thickness: int | None = None) -> Image.Image:
@@ -187,6 +208,56 @@ def _is_pearl_like(color_hex: str) -> bool:
     r,g,b = _hex_to_rgb_tuple(color_hex)
     _, s, v = _rgb_to_hsv_tuple(r,g,b)
     return (v >= 0.92 and s <= 0.20) or (r >= 245 and g >= 245 and b >= 245)
+
+def _mask_select_alpha(mask_img: Image.Image) -> Image.Image:
+    if mask_img.mode != "RGBA":
+        mask_img = mask_img.convert("RGBA")
+    a = mask_img.split()[-1]
+    if a.getextrema() != (0, 0):
+        sel = a
+    else:
+        lum = mask_img.convert("L")
+        mean = sum(lum.getdata()) / (lum.width * lum.height)
+        sel = lum if mean > 127 else ImageOps.invert(lum)
+    sel = sel.filter(ImageFilter.GaussianBlur(0.6))
+    sel = sel.point(lambda p: 255 if p > 12 else 0)
+    return sel
+
+def _colorize_like_token(base_rgba: Image.Image, region_alpha: Image.Image, color_hex: str, thickness: int | None) -> Image.Image:
+    gray = ImageOps.grayscale(base_rgba)
+    if _is_pearl_like(color_hex):
+        base_white = ImageOps.colorize(gray, black=(205,208,212), white=(255,255,255)).convert("RGBA")
+        base_white.putalpha(base_rgba.split()[-1])
+        high_mask = gray.point(lambda p: max(0, min(255, int((p - 180) * 2.2))))
+        mid_mask  = gray.point(lambda p: max(0, min(255, int((p - 120) * 1.2))))
+        warm = random.choice(["#FFE9C8", "#FFD8B0", "#FFE2D9"])
+        cool = random.choice(["#D8C7FF", "#CFF6F6", "#E2F0FF"])
+        warm_layer = Image.new("RGBA", base_rgba.size, (*ImageColor.getrgb(warm), 255))
+        cool_layer = Image.new("RGBA", base_rgba.size, (*ImageColor.getrgb(cool), 255))
+        high_mask = high_mask.filter(ImageFilter.GaussianBlur(0.8))
+        mid_mask  = mid_mask.filter(ImageFilter.GaussianBlur(0.8))
+        high_mask = ImageChops.multiply(high_mask, Image.new("L", high_mask.size, 140))
+        mid_mask  = ImageChops.multiply(mid_mask,  Image.new("L", mid_mask.size, 110))
+        warm_layer.putalpha(mid_mask)
+        cool_layer.putalpha(high_mask)
+        tinted = Image.new("RGBA", base_rgba.size, (0,0,0,0))
+        tinted.alpha_composite(base_white)
+        tinted.alpha_composite(warm_layer)
+        tinted.alpha_composite(cool_layer)
+    else:
+        c = ImageColor.getcolor(color_hex, "RGB")
+        low = tuple(int(v * 0.15) for v in c)
+        tinted = ImageOps.colorize(gray, black=low, white=c).convert("RGBA")
+        tinted.putalpha(base_rgba.split()[-1])
+    out = base_rgba.copy()
+    mask = ImageChops.multiply(region_alpha, base_rgba.split()[-1])
+    out.paste(tinted, (0, 0), mask)
+    return out
+
+def _tint_frame_with_mask(frame: Image.Image, mask_img: Image.Image, color_hex: str, thickness: int | None) -> tuple[Image.Image, Image.Image]:
+    region_alpha = _mask_select_alpha(mask_img)
+    tinted_frame = _colorize_like_token(frame, region_alpha, color_hex, thickness)
+    return tinted_frame, region_alpha
 
 async def render_card_image(
     series: str,
@@ -220,12 +291,27 @@ async def render_card_image(
     cy = (art.height - h) // 2
     art = art.crop((cx, cy, cx + w, cy + h))
     card.alpha_composite(art, (x, y))
+
     frame = _load_frame_for_set(set_id)
     if frame is not None:
+        # 1) Classic perimeter glow around frame edges (inner window excluded)
         if apply_glow:
-            glow = _outer_glow_from_frame(frame, (x, y, w, h), 5, 12, 200, glow_color_hex, thickness=glow_thickness)
-            card.alpha_composite(glow)
+            edge_glow = _outer_glow_from_frame(
+                frame, (x, y, w, h),
+                5, 12, 200,
+                glow_color_hex, thickness=glow_thickness
+            )
+            card.alpha_composite(edge_glow)
+
+        # 2) Tint the frame pixels where mask selects
+        if apply_glow and glow_color_hex:
+            tint_mask = _load_mask_for_set(set_id)
+            if tint_mask is not None:
+                frame, _ = _tint_frame_with_mask(frame, tint_mask, glow_color_hex, glow_thickness)
+
+        # 3) Composite the (possibly tinted) frame
         card.alpha_composite(frame)
+
     draw = ImageDraw.Draw(card)
     BLACK = (0, 0, 0, 255)
     YELLOW = (255, 215, 64, 255)

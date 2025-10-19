@@ -21,7 +21,6 @@ class Dyes(commands.Cog):
         self.db = bot.db
 
     @commands.command(name="u")
-    @commands.is_owner()
     async def cmd_u(self, ctx: commands.Context, subcommand: str | None = None, *args):
         if subcommand is None:
             subcommand = "dye"
@@ -56,17 +55,26 @@ class Dyes(commands.Cog):
             return
 
         if subcommand.lower() == "auto_dye":
+            if not await self.bot.is_owner(ctx.author):
+                await ctx.reply("Only the bot owner can use `mu auto_dye`.", mention_author=False)
+                return
+
             times = 500
             delay = 1.0
             silent = True
             if len(args) >= 1:
-                try: times = max(1, min(int(args[0]), 5000))
-                except: pass
+                try:
+                    times = max(1, min(int(args[0]), 5000))
+                except:
+                    pass
             if len(args) >= 2:
-                try: delay = max(0.1, float(args[1]))
-                except: pass
+                try:
+                    delay = max(0.1, float(args[1]))
+                except:
+                    pass
             if len(args) >= 3:
-                silent = str(args[2]).lower() in ("1","true","t","yes","y")
+                silent = str(args[2]).lower() in ("1", "true", "t", "yes", "y")
+
             if not silent:
                 await ctx.reply(f"Starting {times} × `mu dye` (every {delay:.2f}s)...", mention_author=False)
                 for i in range(times):
@@ -77,6 +85,7 @@ class Dyes(commands.Cog):
                     await asyncio.sleep(delay)
                 await ctx.send(f"✅ Done. Generated {times} dyes.")
                 return
+
             await ctx.reply(f"Starting silent generation: {times} dyes (every {delay:.2f}s)...", mention_author=False)
             counts = Counter()
             failures = 0
@@ -114,6 +123,13 @@ class Dyes(commands.Cog):
             return
 
         await ctx.reply("Usage:\n`mu dye`\n`mu auto_dye <times> <delay> <silent>`", mention_author=False)
+
+    @cmd_u.error
+    async def cmd_u_error(self, ctx: commands.Context, error: Exception):
+        if isinstance(error, commands.NotOwner):
+            await ctx.reply("Only the bot owner can run that.", mention_author=False, delete_after=6)
+        else:
+            raise error
 
     @commands.command(name="dyes")
     async def cmd_mdyes(self, ctx: commands.Context):
